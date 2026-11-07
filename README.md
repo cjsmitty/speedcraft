@@ -13,17 +13,20 @@ whether after-fee opportunities exist at your fee tier, and at retail tiers
 they almost never do. `docs/PLAN.md` has the full design; `docs/RESEARCH.md`
 has the fee data and sources.
 
-What the bot measured on real Coinbase and Kraken quotes while being built
-(BTC/USD and ETH/USD, default fee floors of 0.60% and 0.40% taker):
+What the bot measured on 10 minutes of real Coinbase and Kraken quotes
+(6,108 top-of-book updates, BTC/USD and ETH/USD) replayed through the full
+pipeline at three fee assumptions:
 
-| Metric | Value |
-|---|---|
-| Best net edge seen, BTC/USD | about -102 bps |
-| Best net edge seen, ETH/USD | about -100 bps |
-| Opportunities after fees | 0 |
+| Taker fees assumed | Best net edge, BTC/USD | Best net edge, ETH/USD | After-fee opportunities |
+|---|---|---|---|
+| Retail: 0.60% Coinbase, 0.40% Kraken | -100.9 bps | -99.6 bps | 0 |
+| 0.10% on both (high-volume tier) | -20.9 bps | -19.6 bps | 0 |
+| 0% (measures the raw spread ceiling) | +1.1 bps | +2.5 bps | gross only |
 
-The spread between the two exchanges was near zero; fees are about 1% round
-trip. The bot therefore did nothing, which is the correct outcome.
+The largest cross-exchange price gap in the sample was 0.025%. Any real fee
+tier turns that into a loss, so the bot did nothing, which is the correct
+outcome. Run your own overnight `record` and `replay` before believing
+anything else.
 
 ## Build (macOS)
 

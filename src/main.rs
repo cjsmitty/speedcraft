@@ -349,8 +349,10 @@ async fn main() -> Result<()> {
             let book = Arc::new(BookCache::new());
             let exchanges = build_paper_exchanges(&cfg, &book, false, Some(0))?;
             let mut cfg = cfg;
-            // Staleness is meaningless in replay (timestamps are historical).
+            // Staleness and wall-clock cooldowns are meaningless in replay
+            // (quotes are historical and arrive as fast as they can be read).
             cfg.strategy.max_quote_age_ms = 10_000;
+            cfg.risk.pair_cooldown_ms = 0;
             cfg.ledger_path = format!("{}.replay-ledger.jsonl", file.display());
             let ledger = Ledger::open(&PathBuf::from(&cfg.ledger_path))?;
             let mut engine = Engine::new(cfg, exchanges, book, ledger, "replay");
