@@ -1,0 +1,15 @@
+name: Runner probe
+on:
+  push:
+    branches: ["claude/inspiring-gauss-l3v48b"]
+jobs:
+  probe:
+    name: ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, macos-15, macos-14, macos-13, macos-14-large, macos-15-large, macos-latest-large, macos-13-large]
+    steps:
+      - run: uname -a && sw_vers && xcodebuild -version | head -1
