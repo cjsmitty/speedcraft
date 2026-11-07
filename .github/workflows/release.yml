@@ -1,14 +1,20 @@
 name: Release
 
-# Push a tag like v0.2.0 to build and publish a release:
-#   git tag v0.2.0 && git push origin v0.2.0
-# Or run it by hand from the Actions tab (workflow_dispatch) to build artifacts
-# without publishing.
+# Two ways to publish a release:
+#   1. Push a tag:   git tag v0.2.0 && git push origin v0.2.0
+#   2. Actions tab → Release → Run workflow, enter the tag (e.g. v0.2.0).
+#      The tag is created on the chosen branch if it does not exist.
+# Running by hand with an empty tag builds the artifacts without publishing.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v0.2.0). Leave empty to only build."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -122,7 +128,7 @@ jobs:
     name: Publish release
     needs: [macos, linux]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -135,6 +141,8 @@ jobs:
           ls -la
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: |
             artifacts/*.zip
