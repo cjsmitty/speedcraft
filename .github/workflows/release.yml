@@ -19,7 +19,7 @@ env:
 jobs:
   macos:
     name: macOS app (universal)
-    runs-on: macos-latest
+    runs-on: macos-26
     env:
       # `secrets` cannot be used in step-level `if`, so surface presence here.
       HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
