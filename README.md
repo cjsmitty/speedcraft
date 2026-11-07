@@ -54,11 +54,27 @@ halt, STOP file or shutdown cancels all resting quotes first. Live post-only
 and cancel are implemented for Coinbase (`limit_limit_gtc` + `post_only`),
 Kraken (`oflags=post`) and Binance/Binance.US (`LIMIT_MAKER`).
 
+## Download
+
+Prebuilt packages for every tagged version are on the
+[Releases page](https://github.com/cjsmitty/speedcraft/releases): a universal
+`Speedcraft.app` for macOS (Apple Silicon and Intel) and Linux agent binaries
+for x86_64 and ARM, with SHA-256 checksums. They are built by the
+`Release` GitHub Actions workflow; `CI` runs format, clippy and the test
+suite on Linux and macOS for every push.
+
+The macOS app is ad-hoc signed unless the maintainer configures Developer ID
+secrets, so on first launch right-click → Open, or run
+`xattr -dr com.apple.quarantine /Applications/Speedcraft.app`.
+
+To cut a release: `git tag v0.3.0 && git push origin v0.3.0`.
+
 ## The app
 
 ```sh
+# or build it yourself:
 ./install/make-mac-app.sh      # builds dist/Speedcraft.app (Rust via https://rustup.rs first)
-open dist/Speedcraft.app       # or double-click; right-click → Open the first time (unsigned)
+open dist/Speedcraft.app       # right-click → Open the first time (ad-hoc signed)
 ```
 
 The app opens a Terminal window with logs and the control panel in your

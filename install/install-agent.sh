@@ -6,9 +6,11 @@
 #   # or, from a checkout:   ./install/install-agent.sh
 #
 # Environment overrides:
+#   SPEEDCRAFT_VERSION   release tag to download (default: latest release)
+#   SPEEDCRAFT_BUILD     set to 1 to build from source instead of downloading
 #   SPEEDCRAFT_REPO      git URL to build from (default: this repo)
 #   SPEEDCRAFT_REF       branch/tag to build (default: main)
-#   SPEEDCRAFT_BIN       path to a prebuilt binary to install instead of building
+#   SPEEDCRAFT_BIN       path to a prebuilt binary to install instead
 #   SPEEDCRAFT_LISTEN    bind address (default 127.0.0.1:7777; use 0.0.0.0:7777 only on a private network)
 #   SPEEDCRAFT_NAME      agent display name (default: hostname)
 #   SPEEDCRAFT_AUTOSTART paper | live | none (default paper)
@@ -31,10 +33,36 @@ command -v systemctl >/dev/null || die "systemd is required"
 [ "$(id -u)" -eq 0 ] || SUDO=sudo
 SUDO="${SUDO:-}"
 
+download_release() {
+  local arch tag url tmp
+  case "$(uname -m)" in
+    x86_64|amd64) arch=x86_64 ;;
+    aarch64|arm64) arch=aarch64 ;;
+    *) return 1 ;;
+  esac
+  command -v curl >/dev/null || { $SUDO apt-get update -qq && $SUDO apt-get install -y -qq curl; }
+  if [ -n "${SPEEDCRAFT_VERSION:-}" ]; then
+    tag="$SPEEDCRAFT_VERSION"
+  else
+    tag=$(curl -fsSL https://api.github.com/repos/cjsmitty/speedcraft/releases/latest | grep -m1 '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/') || return 1
+  fi
+  [ -n "$tag" ] || return 1
+  url="https://github.com/cjsmitty/speedcraft/releases/download/${tag}/speedcraft-${tag#v}-linux-${arch}.tar.gz"
+  tmp=$(mktemp -d)
+  say "downloading $url"
+  curl -fsSL "$url" -o "$tmp/sc.tar.gz" || { rm -rf "$tmp"; return 1; }
+  tar -xzf "$tmp/sc.tar.gz" -C "$tmp" speedcraft
+  $SUDO install -m 0755 "$tmp/speedcraft" "$BIN"
+  rm -rf "$tmp"
+}
+
 if [ -n "${SPEEDCRAFT_BIN:-}" ]; then
   say "installing prebuilt binary from $SPEEDCRAFT_BIN"
   $SUDO install -m 0755 "$SPEEDCRAFT_BIN" "$BIN"
+elif [ "${SPEEDCRAFT_BUILD:-0}" != "1" ] && download_release; then
+  say "installed release binary"
 else
+  say "building from source"
   if ! command -v cargo >/dev/null; then
     say "installing Rust toolchain (rustup)"
     command -v curl >/dev/null || { $SUDO apt-get update -qq && $SUDO apt-get install -y -qq curl; }
