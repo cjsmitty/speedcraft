@@ -42,7 +42,12 @@ in live mode, plus whatever an exchange itself loses if it fails.
 
 ## What to run, and when
 
-You need Rust once (https://rustup.rs). Then, on your Mac:
+Easiest: download `Speedcraft-<version>-macos.app.zip` from
+https://github.com/cjsmitty/speedcraft/releases, unzip it, drag
+`Speedcraft.app` to Applications, then right-click it and choose Open (the
+first time only; it is not from the App Store).
+
+Or build it yourself (needs Rust once, from https://rustup.rs):
 
 ```sh
 git clone https://github.com/cjsmitty/speedcraft
@@ -51,7 +56,7 @@ cd speedcraft
 open dist/Speedcraft.app
 ```
 
-A window opens in your browser. Everything else happens there.
+Either way a window opens in your browser. Everything else happens there.
 
 **Day 1, any time:** press **Start watching**. Leave it on. This is safe:
 real prices, pretend money, no orders.
