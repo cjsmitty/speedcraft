@@ -128,9 +128,52 @@ impl EventRing {
 }
 
 /// State shared between a running engine and whatever supervises it.
+/// An in-progress quote recording, toggled from the UI while an engine runs.
+pub struct Recorder {
+    pub path: std::path::PathBuf,
+    pub started_ms: i64,
+    pub count: u64,
+    writer: crate::replay::QuoteWriter<std::io::BufWriter<std::fs::File>>,
+}
+
+impl Recorder {
+    pub fn open(path: std::path::PathBuf) -> std::io::Result<Recorder> {
+        let f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        Ok(Recorder {
+            path,
+            started_ms: now_ms(),
+            count: 0,
+            writer: crate::replay::QuoteWriter::new(std::io::BufWriter::new(f)),
+        })
+    }
+    pub fn write(&mut self, q: &TopOfBook) {
+        if self.writer.write(q).is_ok() {
+            self.count += 1;
+        }
+        if self.count % 500 == 0 {
+            let _ = self.writer.flush();
+        }
+    }
+    pub fn flush(&mut self) {
+        let _ = self.writer.flush();
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RecorderStatus {
+    pub active: bool,
+    pub path: Option<String>,
+    pub started_ms: i64,
+    pub count: u64,
+}
+
 pub struct Shared {
     pub status: RwLock<StatusSnapshot>,
     pub events: Mutex<EventRing>,
+    pub recorder: Mutex<Option<Recorder>>,
 }
 
 impl Shared {
@@ -138,7 +181,19 @@ impl Shared {
         Arc::new(Shared {
             status: RwLock::new(StatusSnapshot::default()),
             events: Mutex::new(EventRing::new(5000)),
+            recorder: Mutex::new(None),
         })
+    }
+    pub fn recorder_status(&self) -> RecorderStatus {
+        match self.recorder.lock().unwrap().as_ref() {
+            Some(r) => RecorderStatus {
+                active: true,
+                path: Some(r.path.display().to_string()),
+                started_ms: r.started_ms,
+                count: r.count,
+            },
+            None => RecorderStatus::default(),
+        }
     }
 }
 
@@ -755,6 +810,11 @@ impl Engine {
                 q = rx.recv() => {
                     let Some(q) = q else { break };
                     self.quotes_seen += 1;
+                    if let Some(sh) = &self.shared {
+                        if let Some(rec) = sh.recorder.lock().unwrap().as_mut() {
+                            rec.write(&q);
+                        }
+                    }
                     let pair = q.pair.clone();
                     self.book.update(q);
                     self.evaluate_pair(&pair).await;

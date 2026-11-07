@@ -98,6 +98,8 @@ All under `/api`, JSON, `Authorization: Bearer <token>` when a token is set.
 | POST | `/engine/resume` | clear a halt |
 | POST | `/stopfile` | `{"present":true}` create/remove the STOP file |
 | GET / PUT | `/config` | read / validate-and-write `config.toml` |
+| POST | `/record` | `{"on":true}` start saving every quote the running engine sees to `quotes-<date>.jsonl`; `{"on":false}` stop |
+| POST | `/scan` | `{"file":"..."}` optional; ranks the newest recording at your fee floors plus volume and zero tiers |
 | GET / POST / DELETE | `/agents`, `/agents/{id}` | UI host only: remote agent registry |
 | ANY | `/agents/{id}/...` | UI host only: proxied to that agent |
 

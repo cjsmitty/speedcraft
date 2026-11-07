@@ -2,14 +2,14 @@
 //! status view. Safe to share across HTTP handlers.
 
 use crate::config::Config;
-use crate::engine::{Control, Shared, StampedEvent, StatusSnapshot};
+use crate::engine::{Control, Recorder, RecorderStatus, Shared, StampedEvent, StatusSnapshot};
 use crate::runtime::{
     build_engine, check_live_gates, live_env_set, run_engine, Mode, LIVE_CONFIRM_PHRASE,
 };
 use crate::types::now_ms;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::{mpsc, watch};
@@ -74,6 +74,16 @@ pub struct AgentStatus {
     pub config: ConfigSummary,
     pub stop_file_present: bool,
     pub snapshot: StatusSnapshot,
+    pub recorder: RecorderStatus,
+    /// Recordings available next to the config, newest first.
+    pub recordings: Vec<RecordingInfo>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecordingInfo {
+    pub path: String,
+    pub bytes: u64,
+    pub modified_ms: i64,
 }
 
 impl Supervisor {
@@ -290,9 +300,139 @@ impl Supervisor {
             config: self.config_summary(),
             stop_file_present: self.stop_file_path().exists(),
             snapshot: self.shared.status.read().unwrap().clone(),
+            recorder: self.shared.recorder_status(),
+            recordings: self.recordings(),
         }
     }
 
+    fn data_dir(&self) -> PathBuf {
+        self.cfg_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    pub fn recordings(&self) -> Vec<RecordingInfo> {
+        let mut out = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(self.data_dir()) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("quotes-") && name.ends_with(".jsonl") {
+                    if let Ok(md) = e.metadata() {
+                        let modified_ms = md
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0);
+                        out.push(RecordingInfo {
+                            path: e.path().display().to_string(),
+                            bytes: md.len(),
+                            modified_ms,
+                        });
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|r| std::cmp::Reverse(r.modified_ms));
+        out
+    }
+
+    /// Start writing every quote the running engine sees to a new file.
+    pub fn start_recording(&self) -> Result<RecorderStatus> {
+        if self.state() == EngineState::Stopped {
+            bail!("start the engine (paper is fine) before recording");
+        }
+        let mut guard = self.shared.recorder.lock().unwrap();
+        if guard.is_some() {
+            bail!("already recording");
+        }
+        let name = format!("quotes-{}.jsonl", chrono::Utc::now().format("%Y%m%d-%H%M"));
+        let rec = Recorder::open(self.data_dir().join(name))?;
+        *guard = Some(rec);
+        drop(guard);
+        Ok(self.shared.recorder_status())
+    }
+
+    pub fn stop_recording(&self) -> Result<RecorderStatus> {
+        let mut guard = self.shared.recorder.lock().unwrap();
+        let Some(mut rec) = guard.take() else {
+            bail!("not recording")
+        };
+        rec.flush();
+        Ok(RecorderStatus {
+            active: false,
+            path: Some(rec.path.display().to_string()),
+            started_ms: rec.started_ms,
+            count: rec.count,
+        })
+    }
+
+    /// Rank the pairs in a recording (default: the newest) at the configured
+    /// fee floors plus the standard tiers.
+    pub fn scan(&self, file: Option<&str>) -> Result<ScanResult> {
+        let path = match file {
+            Some(f) => PathBuf::from(f),
+            None => {
+                if let Some(r) = self.shared.recorder.lock().unwrap().as_mut() {
+                    r.flush();
+                }
+                PathBuf::from(
+                    self.recordings()
+                        .first()
+                        .ok_or_else(|| anyhow::anyhow!("no recordings yet; record first"))?
+                        .path
+                        .clone(),
+                )
+            }
+        };
+        let quotes = crate::replay::read_quotes(&path)?;
+        if quotes.is_empty() {
+            bail!("recording {} is empty", path.display());
+        }
+        let cfg = self.load_config()?;
+        let mut mine = crate::scan::FeeTier::uniform("yours", 10.0, 10.0, 2.0);
+        for e in cfg.enabled_exchanges() {
+            let f = cfg.fee_floor(e);
+            mine.taker_bps
+                .insert(e, f.taker_bps.to_string().parse().unwrap_or(10.0));
+            mine.maker_bps
+                .insert(e, f.maker_bps.to_string().parse().unwrap_or(10.0));
+        }
+        mine.buffer_bps = cfg
+            .strategy
+            .slippage_buffer_bps
+            .to_string()
+            .parse()
+            .unwrap_or(2.0);
+        let tiers = vec![
+            mine,
+            crate::scan::FeeTier::volume(),
+            crate::scan::FeeTier::uniform("zero", 0.0, 0.0, 0.0),
+        ];
+        let stats = crate::scan::scan(&quotes, &tiers, 3000);
+        let first = quotes.iter().map(|q| q.ts_ms).min().unwrap_or(0);
+        let last = quotes.iter().map(|q| q.ts_ms).max().unwrap_or(0);
+        Ok(ScanResult {
+            path: path.display().to_string(),
+            quotes: quotes.len(),
+            span_ms: last - first,
+            min_edge_bps: cfg.strategy.min_edge_bps.to_string().parse().unwrap_or(5.0),
+            stats,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ScanResult {
+    pub path: String,
+    pub quotes: usize,
+    pub span_ms: i64,
+    pub min_edge_bps: f64,
+    pub stats: Vec<crate::scan::PairStats>,
+}
+
+impl Supervisor {
     pub fn events(&self, since: u64, limit: usize) -> (Vec<StampedEvent>, u64) {
         let ring = self.shared.events.lock().unwrap();
         (ring.since(since, limit), ring.latest_seq())
@@ -386,6 +526,31 @@ mod tests {
             "7",
             "invalid writes must not replace the file"
         );
+    }
+
+    #[tokio::test]
+    async fn recording_requires_running_engine_and_scan_needs_a_file() {
+        let sup = Supervisor::new("t", temp_cfg(false));
+        assert!(sup.start_recording().is_err());
+        assert!(sup.stop_recording().is_err());
+        assert!(sup
+            .scan(None)
+            .unwrap_err()
+            .to_string()
+            .contains("no recordings"));
+        assert!(sup.status().recordings.is_empty());
+        // A recording written by hand is found and scanned.
+        let dir = sup.cfg_path.parent().unwrap().to_path_buf();
+        let f = dir.join("quotes-20260101-0000.jsonl");
+        std::fs::write(&f, concat!(
+            r#"{"ts_ms":1,"exchange":"coinbase","pair":"BTC/USD","bid":"100","bid_qty":"1","ask":"100.1","ask_qty":"1"}"#, "\n",
+            r#"{"ts_ms":2,"exchange":"kraken","pair":"BTC/USD","bid":"101","bid_qty":"1","ask":"101.2","ask_qty":"1"}"#, "\n"
+        )).unwrap();
+        assert_eq!(sup.status().recordings.len(), 1);
+        let r = sup.scan(None).unwrap();
+        assert_eq!(r.quotes, 2);
+        assert_eq!(r.stats[0].pair, "BTC/USD");
+        assert!(r.stats[0].arb_net_p95.contains_key("yours"));
     }
 
     #[tokio::test]

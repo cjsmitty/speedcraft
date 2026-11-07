@@ -8,79 +8,115 @@
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><span class="logo">⚡</span> Speedcraft</div>
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7c6cff"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs><rect width="32" height="32" rx="9" fill="url(#g)"/><path d="M18 5 9 18h6l-1 9 9-13h-6z" fill="#fff"/></svg>
+    <div><div class="name">Speedcraft</div><div class="tag">watch · test · trade</div></div>
+  </div>
   <nav class="agents" id="agent-tabs"></nav>
-  <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">connecting…</span></div>
+  <div class="topright">
+    <button class="iconbtn" id="btn-help" title="What do these words mean?">? Glossary</button>
+    <button class="iconbtn" id="btn-theme" title="Light / dark">◐</button>
+    <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">connecting…</span></div>
+  </div>
 </header>
 
 <main>
-  <section class="banner-row" id="banners"></section>
+  <section id="banners"></section>
 
-  <section class="card controls">
-    <div class="state-pill" id="state-pill">—</div>
-    <div class="buttons">
-      <button class="btn primary" id="btn-paper" title="Live quotes, simulated fills. No real orders.">▶ Start paper</button>
-      <button class="btn danger-outline" id="btn-live" title="Real orders. Requires three separate confirmations.">▶ Start live</button>
-      <button class="btn" id="btn-stop">■ Stop</button>
-      <span class="spacer"></span>
-      <button class="btn danger" id="btn-halt" title="Stop sending orders immediately but keep watching the market.">⛔ Halt trading</button>
-      <button class="btn" id="btn-resume">Resume</button>
-      <label class="toggle" title="A STOP file pauses trading on this agent until removed."><input type="checkbox" id="chk-stopfile"> STOP file</label>
+  <section class="hero card" id="hero">
+    <div class="hero-left">
+      <div class="hero-state" id="hero-state">—</div>
+      <h1 id="hero-title">Loading…</h1>
+      <p class="hero-sub" id="hero-sub"></p>
+      <div class="chips" id="hero-chips"></div>
     </div>
-    <div class="meta" id="agent-meta"></div>
+    <div class="hero-actions">
+      <button class="bigbtn primary" id="btn-paper"><span class="bb-title">▶ Start watching</span><span class="bb-sub">Safe. Real prices, pretend money. No orders are ever sent.</span></button>
+      <button class="bigbtn" id="btn-stop"><span class="bb-title">■ Stop</span><span class="bb-sub">Shut the engine down cleanly.</span></button>
+      <button class="bigbtn danger" id="btn-halt"><span class="bb-title">⛔ Emergency stop</span><span class="bb-sub">Stop sending orders now, keep watching.</span></button>
+      <div class="minor">
+        <button class="btn danger-outline" id="btn-live">Start live trading…</button>
+        <button class="btn" id="btn-resume">Resume after a stop</button>
+        <label class="toggle" title="A STOP file pauses trading on this machine until you remove it."><input type="checkbox" id="chk-stopfile"> Pause file</label>
+      </div>
+    </div>
   </section>
 
-  <section class="kpis" id="kpis"></section>
+  <section class="card verdict" id="verdict">
+    <div class="verdict-head"><h2>Can this make money?</h2><span class="hint" id="verdict-window"></span></div>
+    <div class="money" id="money"></div>
+    <p class="verdict-text" id="verdict-text"></p>
+  </section>
+
+  <section class="card steps" id="steps">
+    <h2>What to do, in order</h2>
+    <ol id="step-list"></ol>
+  </section>
+
+  <section class="card" id="research" hidden>
+    <div class="card-head"><h2>Which coins came closest</h2><span class="hint" id="research-sub"></span></div>
+    <p class="lead" id="research-lead"></p>
+    <table class="tbl" id="research-table"></table>
+  </section>
 
   <section class="grid">
     <div class="card span2">
-      <h2>Cross-exchange edges <small>net of fees and slippage buffer, basis points</small></h2>
-      <canvas id="edge-chart" height="140"></canvas>
+      <div class="card-head"><h2>Right now: price gaps between exchanges</h2><span class="hint">A gap only pays if it beats both exchanges' fees. Money column is per $10,000 traded.</span></div>
+      <canvas id="edge-chart" height="150"></canvas>
       <table class="tbl" id="edges"></table>
     </div>
     <div class="card span2" id="maker-card" hidden>
-      <h2>Maker quotes <small>post-only on the quote venue, hedged on the other</small></h2>
+      <div class="card-head"><h2>Standing offers (maker mode)</h2><span class="hint">Your resting buy/sell offers. They only earn when someone takes them.</span></div>
       <table class="tbl" id="maker"></table>
     </div>
     <div class="card">
-      <h2>Top of book</h2>
+      <div class="card-head"><h2>Live prices</h2></div>
       <table class="tbl" id="books"></table>
     </div>
     <div class="card">
-      <h2>Balances</h2>
+      <div class="card-head"><h2>Money on each exchange</h2></div>
       <table class="tbl" id="balances"></table>
     </div>
     <div class="card span2">
-      <h2>Events <small>trades, opportunities, halts</small></h2>
+      <div class="card-head"><h2>Activity</h2><span class="hint">Trades, opportunities, safety stops.</span></div>
       <div class="events" id="events"></div>
     </div>
-    <div class="card span2">
-      <h2>Configuration <small id="config-path"></small></h2>
-      <textarea id="config-text" spellcheck="false"></textarea>
-      <div class="row">
-        <button class="btn" id="btn-config-reload">Reload</button>
-        <button class="btn primary" id="btn-config-save">Validate &amp; save</button>
-        <span class="hint" id="config-msg"></span>
+  </section>
+
+  <details class="card advanced" id="advanced">
+    <summary>Advanced: settings, remote computers, raw numbers</summary>
+    <div class="adv-grid">
+      <div>
+        <div class="card-head"><h2>Settings file</h2><span class="hint" id="config-path"></span></div>
+        <textarea id="config-text" spellcheck="false"></textarea>
+        <div class="row">
+          <button class="btn" id="btn-config-reload">Reload</button>
+          <button class="btn primary" id="btn-config-save">Check &amp; save</button>
+          <span class="hint" id="config-msg"></span>
+        </div>
+      </div>
+      <div id="agents-card">
+        <div class="card-head"><h2>Other computers running Speedcraft</h2><span class="hint">A Linux box or VM running the agent. Add it here and switch to it with the tabs at the top.</span></div>
+        <table class="tbl" id="agents-table"></table>
+        <form class="row" id="agent-form">
+          <input required placeholder="Name (e.g. My VM)" id="agent-name">
+          <input required placeholder="Address, e.g. http://127.0.0.1:7777" id="agent-url" class="wide">
+          <input placeholder="Token (printed by the installer)" id="agent-token" class="wide">
+          <button class="btn primary" type="submit">Add</button>
+        </form>
+      </div>
+      <div class="span-all">
+        <div class="card-head"><h2>Raw status</h2></div>
+        <pre class="raw" id="raw-meta"></pre>
       </div>
     </div>
-    <div class="card span2" id="agents-card">
-      <h2>Remote agents <small>Linux boxes running <code>speedcraft agent</code></small></h2>
-      <table class="tbl" id="agents-table"></table>
-      <form class="row" id="agent-form">
-        <input required placeholder="Name (e.g. VM 1)" id="agent-name">
-        <input required placeholder="URL (e.g. http://127.0.0.1:7777 via SSH tunnel)" id="agent-url" class="wide">
-        <input placeholder="Token (from agent.token on the box)" id="agent-token" class="wide">
-        <button class="btn primary" type="submit">Add agent</button>
-      </form>
-      <p class="hint">The browser only ever talks to this app. This app forwards commands to each agent with its token. For agents on other machines, reach them over an SSH tunnel, Tailscale, or a private network. Never expose an agent port to the internet.</p>
-    </div>
-  </section>
+  </details>
 </main>
 
 <div class="modal" id="modal-live" hidden>
   <div class="modal-box">
-    <h3>Start LIVE trading on <span id="live-agent-name"></span></h3>
-    <p>Real orders will be sent with real money. This bot cannot guarantee profit. It can only bound losses by the limits in your config.</p>
+    <h3>Trade with real money on <span id="live-agent-name"></span>?</h3>
+    <p>Real orders will be sent. This program cannot promise profit. The most it can do is stop itself when it loses more than the limit you set.</p>
     <ul id="live-gates"></ul>
     <p>Type <code>I ACCEPT LOSSES</code> to confirm:</p>
     <input id="live-phrase" autocomplete="off">
@@ -94,9 +130,31 @@
 <div class="modal" id="modal-token" hidden>
   <div class="modal-box">
     <h3>Access token required</h3>
-    <p>This Speedcraft instance requires a bearer token.</p>
+    <p>This Speedcraft needs a token (the installer printed it).</p>
     <input id="token-input" autocomplete="off" placeholder="paste token">
     <div class="row"><button class="btn primary" id="token-save">Save</button></div>
+  </div>
+</div>
+
+<div class="modal" id="modal-help" hidden>
+  <div class="modal-box wide">
+    <h3>Plain-English glossary</h3>
+    <dl class="gloss">
+      <dt>Watching (paper mode)</dt><dd>The program follows real prices and pretends to trade. No money moves. This is how you test it.</dd>
+      <dt>Live mode</dt><dd>Real orders with real money. Needs three separate confirmations.</dd>
+      <dt>Price gap</dt><dd>The same coin costs slightly different amounts on different exchanges. The bot buys where it is cheap and sells where it is dear, at the same instant.</dd>
+      <dt>Fees</dt><dd>Each exchange takes a cut of every trade. A gap only pays if it is bigger than both cuts together. This is the whole game.</dd>
+      <dt>bps (basis points)</dt><dd>Hundredths of a percent. 100 bps = 1%. Easier: 1 bp is $1 on every $10,000 you trade.</dd>
+      <dt>After fees</dt><dd>What is left of a price gap once both exchanges' fees and a safety margin are subtracted. Positive means a trade would have paid.</dd>
+      <dt>Opportunity</dt><dd>A moment when a gap beat the fees by at least your minimum. Rare at normal fee levels.</dd>
+      <dt>Taker / maker</dt><dd>A taker trades immediately and pays the higher fee. A maker leaves an offer on the board and pays the lower fee, but only earns if someone takes the offer.</dd>
+      <dt>Maker mode</dt><dd>The bot leaves standing offers on the cheap exchange and, when one is taken, instantly does the opposite trade on the other exchange.</dd>
+      <dt>Hedge</dt><dd>The opposite trade that locks in the gap, so you are never left holding the coin.</dd>
+      <dt>Record / Rank</dt><dd>Record saves every price the bot sees to a file. Rank reads that file and tells you which coins came closest to paying, at your fees.</dd>
+      <dt>Emergency stop / Pause file</dt><dd>Two ways to stop orders immediately. The bot keeps watching so you can resume.</dd>
+      <dt>Agent</dt><dd>Speedcraft running on another computer (a Linux VM) that you control from this screen.</dd>
+    </dl>
+    <div class="row"><button class="btn primary" id="help-close">Close</button></div>
   </div>
 </div>
 

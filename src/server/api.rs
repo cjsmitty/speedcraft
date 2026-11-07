@@ -44,6 +44,8 @@ pub fn router(state: AppState) -> Router {
         .route("/engine/resume", post(engine_resume))
         .route("/stopfile", post(stopfile))
         .route("/config", get(config_get).put(config_put))
+        .route("/record", post(record_toggle))
+        .route("/scan", post(scan_run))
         .route("/agents", get(agents_list).post(agents_add))
         .route("/agents/:id", axum::routing::delete(agents_remove))
         .route("/agents/:id/*rest", axum::routing::any(agents_proxy))
@@ -206,6 +208,37 @@ async fn config_put(State(st): State<AppState>, Json(req): Json<ConfigPut>) -> A
     Ok(Json(
         json!({"ok": true, "restart_required": running, "summary": st.sup.config_summary()}),
     ))
+}
+
+#[derive(Deserialize)]
+struct RecordReq {
+    on: bool,
+}
+
+async fn record_toggle(State(st): State<AppState>, Json(req): Json<RecordReq>) -> ApiResult {
+    let status = if req.on {
+        st.sup.start_recording()?
+    } else {
+        st.sup.stop_recording()?
+    };
+    Ok(Json(serde_json::to_value(status).unwrap_or(Value::Null)))
+}
+
+#[derive(Deserialize, Default)]
+struct ScanReq {
+    #[serde(default)]
+    file: Option<String>,
+}
+
+async fn scan_run(State(st): State<AppState>, body: Option<Json<ScanReq>>) -> ApiResult {
+    let req = body.map(|b| b.0).unwrap_or_default();
+    let sup = st.sup.clone();
+    let file = req.file.clone();
+    // Scanning a long recording can take a second or two; keep it off the runtime threads.
+    let result = tokio::task::spawn_blocking(move || sup.scan(file.as_deref()))
+        .await
+        .map_err(|e| ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))??;
+    Ok(Json(serde_json::to_value(result).unwrap_or(Value::Null)))
 }
 
 fn registry(st: &AppState) -> Result<&Arc<AgentRegistry>, ApiError> {
@@ -484,6 +517,27 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["latest_seq"], 0);
         assert_eq!(v["events"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn record_and_scan_endpoints_fail_cleanly_when_idle() {
+        let (st, _d) = state(None, true);
+        let app = router(st);
+        let (s, v) = call(
+            app.clone(),
+            "POST",
+            "/api/record",
+            None,
+            Some(json!({"on": true})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("start the engine"));
+        let (s, v) = call(app.clone(), "POST", "/api/scan", None, Some(json!({}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("no recordings"));
+        let (_, v) = call(app, "GET", "/api/status", None, None).await;
+        assert_eq!(v["recorder"]["active"], false);
     }
 
     #[tokio::test]

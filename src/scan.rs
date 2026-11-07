@@ -5,12 +5,12 @@
 use crate::replay::QuoteRecord;
 use crate::types::ExchangeId;
 use rust_decimal::prelude::ToPrimitive;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// A fee scenario: taker on both legs (arbitrage) or maker on one leg plus
 /// taker hedge on the other (market making).
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FeeTier {
     pub name: String,
     pub taker_bps: HashMap<ExchangeId, f64>,
@@ -55,7 +55,7 @@ impl FeeTier {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PairStats {
     pub pair: String,
     pub samples: usize,

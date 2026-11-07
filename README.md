@@ -1,32 +1,17 @@
 # Speedcraft
 
-A cross-exchange crypto arbitrage bot in Rust for macOS (and Linux), with
-hard risk limits and a paper-trading default.
+A crypto arbitrage bot in Rust with a point-and-click control panel, a
+headless mode for Linux servers, and hard safety limits. Paper trading is the
+default; real money needs three separate confirmations.
 
-**Read this first.** No trading bot can be made incapable of losing money.
-What this one does instead is refuse to send any trade that is not already
-profitable after real fees at the moment it is sent, use immediate-or-cancel
-orders so nothing ever rests on a book, unwind any one-legged fill at once,
-and halt on a daily loss limit, a failure streak, or a `STOP` file. Its worst
-case is bounded by the limits you set. Its best case depends entirely on
-whether after-fee opportunities exist at your fee tier, and at retail tiers
-they almost never do. `docs/PLAN.md` has the full design; `docs/RESEARCH.md`
-has the fee data and sources.
+**New here? Read [docs/START_HERE.md](docs/START_HERE.md).** It says what to
+run, when, and gives the straight answer on whether it makes money.
 
-What the bot measured on 10 minutes of real Coinbase and Kraken quotes
-(6,108 top-of-book updates, BTC/USD and ETH/USD) replayed through the full
-pipeline at three fee assumptions:
-
-| Taker fees assumed | Best net edge, BTC/USD | Best net edge, ETH/USD | After-fee opportunities |
-|---|---|---|---|
-| Retail: 0.60% Coinbase, 0.40% Kraken | -100.9 bps | -99.6 bps | 0 |
-| 0.10% on both (high-volume tier) | -20.9 bps | -19.6 bps | 0 |
-| 0% (measures the raw spread ceiling) | +1.1 bps | +2.5 bps | gross only |
-
-The largest cross-exchange price gap in the sample was 0.025%. Any real fee
-tier turns that into a loss, so the bot did nothing, which is the correct
-outcome. Run your own overnight `record` and `replay` before believing
-anything else.
+**The short version of that answer:** at normal retail fees it does not. That
+is measured: the gaps between exchanges are 0.0 to 0.3%, the fees are about
+1%, so the bot correctly sends no trades. The in-app ranking tool shows you
+exactly how far each coin is from paying at your fees, and the panel at the
+top of the screen projects earnings per day and month from your own data.
 
 ## Altcoins: what the data says
 
@@ -188,7 +173,7 @@ afford to lose on any exchange.
 cargo test
 ```
 
-71 tests: strategy math with exact decimal expectations, maker quote math,
+77 tests: strategy math with exact decimal expectations, maker quote math,
 maker manager end to end (rest, fill, hedge, inventory cap, halt cancels),
 the scan ranker, risk state machine,
 paper exchange fills, two-leg executor including unwind, Kraken HMAC-SHA512
