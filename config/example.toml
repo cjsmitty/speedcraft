@@ -79,6 +79,7 @@ max_inventory_notional = 300   # stop quoting one side beyond this net position
 requote_bps = 1                # re-post when the fair price moves this much
 max_improve_bps = 1            # join the best level or improve it by at most this
 fill_poll_ms = 500
+min_requote_ms = 1000         # never cancel/replace a side more often than this
 # pairs = ["ATOM/USD", "INJ/USD"]   # default: all pairs mapped on both venues
 
 [paper]

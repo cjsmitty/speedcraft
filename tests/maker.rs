@@ -54,6 +54,7 @@ fn cfg() -> Config {
         requote_bps: dec!(1),
         max_improve_bps: dec!(2),
         fill_poll_ms: 100,
+        min_requote_ms: 0,
         pairs: Some(vec!["BTC/USD".into()]),
     });
     cfg.validate().unwrap();

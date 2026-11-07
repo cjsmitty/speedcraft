@@ -237,6 +237,11 @@ impl Engine {
     /// Write a ledger event to disk and to the shared event ring.
     pub fn emit(&mut self, ev: LedgerEvent) {
         self.ledger.write(&ev);
+        // Quote place/cancel events are high-volume; they go to the ledger file
+        // for audit but not to the UI ring (the UI shows live maker state).
+        if matches!(ev, LedgerEvent::Quote { .. }) {
+            return;
+        }
         if let Some(sh) = &self.shared {
             sh.events.lock().unwrap().push(ev);
         }

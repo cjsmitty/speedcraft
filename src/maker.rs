@@ -24,6 +24,7 @@ struct Resting {
     exchange_order_id: Option<String>,
     quote: DesiredQuote,
     last_poll: Instant,
+    placed_at: Instant,
 }
 
 #[derive(Default)]
@@ -227,15 +228,24 @@ impl MakerManager {
 
         // 3. Reconcile each side.
         for (side, want) in [(Side::Buy, desired.bid), (Side::Sell, desired.ask)] {
-            let current = {
+            let (current, age) = {
                 let st = &self.state[pair];
-                match side {
-                    Side::Buy => st.bid.as_ref().map(|r| r.quote.clone()),
-                    Side::Sell => st.ask.as_ref().map(|r| r.quote.clone()),
-                }
+                let r = match side {
+                    Side::Buy => st.bid.as_ref(),
+                    Side::Sell => st.ask.as_ref(),
+                };
+                (r.map(|r| r.quote.clone()), r.map(|r| r.placed_at.elapsed()))
             };
             if !needs_requote(current.as_ref(), want.as_ref(), self.params.requote_bps) {
                 continue;
+            }
+            // Rate-limit cancel/replace per side, unless we must pull the quote.
+            if want.is_some() {
+                if let Some(age) = age {
+                    if age < Duration::from_millis(self.cfg.min_requote_ms) {
+                        continue;
+                    }
+                }
             }
             if current.is_some() {
                 if let Some(ev) = self.cancel_side(pair, side).await {
@@ -263,6 +273,7 @@ impl MakerManager {
                         exchange_order_id: r.exchange_order_id,
                         quote: want.clone(),
                         last_poll: Instant::now(),
+                        placed_at: Instant::now(),
                     };
                     match side {
                         Side::Buy => st.bid = Some(resting),

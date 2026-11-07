@@ -52,6 +52,9 @@ pub struct MakerConfig {
     /// How often to poll a resting order's status, ms.
     #[serde(default = "default_fill_poll_ms")]
     pub fill_poll_ms: u64,
+    /// Do not cancel/replace a side more often than this, ms (rate limits).
+    #[serde(default = "default_min_requote_ms")]
+    pub min_requote_ms: u64,
     /// Restrict to these pairs (default: all configured pairs on both venues).
     #[serde(default)]
     pub pairs: Option<Vec<String>>,
@@ -65,6 +68,9 @@ fn default_improve_bps() -> Decimal {
 }
 fn default_fill_poll_ms() -> u64 {
     500
+}
+fn default_min_requote_ms() -> u64 {
+    1000
 }
 
 fn default_ledger_path() -> String {

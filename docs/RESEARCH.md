@@ -135,3 +135,25 @@ break-even for plain arbitrage against Coinbase at a volume tier. The
 Binance.US books for those coins are thin (OP's spread there is wide), so
 treat these as "there is room" rather than "there is money" until a paper
 run shows real fills.
+
+### Paper run: maker mode quoting on Binance.US, hedging on Kraken
+
+Configuration: 10 pairs (OP, ATOM, AAVE, BCH, PEPE, SHIB, DOT, NEAR, LTC,
+UNI), target edge 5 bps, 50 USD per quote, Binance.US quotes polled at 1 Hz,
+paper fills only when the venue's book trades through our resting price.
+
+| Duration | Pairs quoting | Quotes placed | Fills | PnL |
+|---|---|---|---|---|
+| ~25 min | 8 of 10 (BCH/DOT/PEPE/SHIB sizes below minimums at times) | 11,084 | **0** | 0 |
+
+Reading: the scan's positive "maker edge" on OP, ATOM and AAVE exists because
+Binance.US's best bid and ask on those coins sit far from where Coinbase and
+Kraken trade. A quote resting at that level is far from the real market, so
+nothing hits it. Edge that never fills is not edge. Two things would change
+this and both need a real account to test: (1) quoting closer to the hedge
+venue's price (which only works at a genuinely low maker fee: 0% on
+Binance.US, and still needs the hedge taker fee covered), and (2) a longer
+run with the native WebSocket feed instead of 1 Hz polling, since fills
+happen inside the second. Run this overnight on the Mac before drawing a
+final conclusion, with the same config (`config/alts3.toml`, `[maker]`
+enabled, `quote_exchange = "binance_us"`).
