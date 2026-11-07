@@ -1,0 +1,72 @@
+# Speedcraft configuration. Copy to config.toml and edit.
+#
+# PAPER MODE IS THE DEFAULT. To trade for real you must set live = true here,
+# pass --live on the command line, AND export SPEEDCRAFT_I_ACCEPT_LOSSES=yes.
+# All three. Each one alone does nothing.
+
+live = false
+ledger_path = "ledger.jsonl"
+stop_file = "STOP"          # `touch STOP` halts the bot within one loop
+
+[strategy]
+min_edge_bps = 5            # trade only if net edge after fees+buffer >= 0.05%
+min_profit_quote = 0.50     # and expected net profit >= $0.50
+slippage_buffer_bps = 2     # subtracted from every edge estimate
+depth_fraction = 0.5        # take at most half the displayed top-of-book size
+max_quote_age_ms = 750      # ignore quotes older than this
+max_notional_quote = 500    # per leg, per trade
+
+[risk]
+max_daily_loss_quote = 25   # halt for the UTC day below -$25 realised
+max_consecutive_failures = 3
+max_consecutive_errors = 5
+pair_cooldown_ms = 2000
+max_trades_per_day = 200
+order_timeout_ms = 3000
+unwind_cross_bps = 20       # cross the book 0.20% when unwinding a bad leg
+
+# Fee floors in basis points. At startup the bot fetches your real fee tier and
+# uses the HIGHER of this value and the fetched one. Put your true tier here.
+[exchanges.coinbase]
+enabled = true
+taker_fee_bps = 60          # Coinbase Advanced lowest tier (verify yours)
+maker_fee_bps = 40
+
+[exchanges.kraken]
+enabled = true
+taker_fee_bps = 40          # Kraken Pro lowest tier (verify yours)
+maker_fee_bps = 25
+
+[exchanges.binance]
+enabled = false             # global Binance; unavailable to US persons
+taker_fee_bps = 10
+maker_fee_bps = 10
+
+[exchanges.binance_us]
+enabled = false
+taker_fee_bps = 2
+maker_fee_bps = 0
+
+# Canonical pairs and their exchange-native symbols. Be careful: USD and USDT
+# are different assets. Only map a pair across exchanges where the quote asset
+# is genuinely the same, or you are trading the USDT/USD basis, not arbitrage.
+[[pairs]]
+pair = "BTC/USD"
+[pairs.markets]
+coinbase = "BTC-USD"
+kraken = "BTC/USD"
+binance_us = "BTCUSD"
+
+[[pairs]]
+pair = "ETH/USD"
+[pairs.markets]
+coinbase = "ETH-USD"
+kraken = "ETH/USD"
+binance_us = "ETHUSD"
+
+[paper]
+start_quote = 10000
+start_base = 0.2
+sim_slippage_bps = 1
+sim_latency_ms = 50
+sim_miss_probability = 0.0
