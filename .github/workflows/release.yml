@@ -20,6 +20,10 @@ jobs:
   macos:
     name: macOS app (universal)
     runs-on: macos-14
+    env:
+      # `secrets` cannot be used in step-level `if`, so surface presence here.
+      HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
+      HAS_APPLE_ID: ${{ secrets.APPLE_ID != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -40,7 +44,7 @@ jobs:
           lipo -info dist/speedcraft
           dist/speedcraft --version
       - name: Import signing certificate (optional)
-        if: ${{ secrets.MACOS_CERT_P12 != '' }}
+        if: env.HAS_CERT == 'true'
         env:
           MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
           MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
@@ -57,7 +61,7 @@ jobs:
           SPEEDCRAFT_BIN: dist/speedcraft
         run: ./install/make-mac-app.sh
       - name: Notarize (optional)
-        if: ${{ env.SIGN_IDENTITY != '' && secrets.APPLE_ID != '' }}
+        if: env.SIGN_IDENTITY != '' && env.HAS_APPLE_ID == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
