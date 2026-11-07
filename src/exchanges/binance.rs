@@ -198,7 +198,8 @@ impl Binance {
                 }
             }
             "REJECTED" => OrderStatus::Rejected,
-            "NEW" | "PENDING_NEW" | "" => OrderStatus::Unknown,
+            "NEW" => OrderStatus::Open,
+            "PENDING_NEW" | "" => OrderStatus::Unknown,
             other => {
                 return Err(ExchangeError::BadResponse(format!(
                     "binance order status {other}"
@@ -248,6 +249,84 @@ impl Binance {
             avg_price: avg,
             fee_quote: fee,
         })
+    }
+}
+
+impl Binance {
+    async fn poll_top_of_book(
+        &self,
+        pairs: Vec<Pair>,
+        tx: mpsc::Sender<TopOfBook>,
+    ) -> Result<(), ExchangeError> {
+        let symbols: Vec<String> = pairs
+            .iter()
+            .filter_map(|p| self.symbols.get(p).cloned())
+            .collect();
+        let upper: HashMap<String, Pair> = self
+            .pairs
+            .iter()
+            .map(|(s, p)| (s.to_ascii_uppercase(), p.clone()))
+            .collect();
+        let list = format!(
+            "[{}]",
+            symbols
+                .iter()
+                .map(|s| format!("\"{s}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let mut tick = tokio::time::interval(Duration::from_millis(1000));
+        let mut failures = 0u32;
+        loop {
+            tick.tick().await;
+            let v = match self
+                .public("/api/v3/ticker/bookTicker", &[("symbols", list.as_str())])
+                .await
+            {
+                Ok(v) => {
+                    failures = 0;
+                    v
+                }
+                Err(e) => {
+                    failures += 1;
+                    if failures >= 10 {
+                        return Err(e);
+                    }
+                    continue;
+                }
+            };
+            let items: Vec<Value> = match v {
+                Value::Array(a) => a,
+                other => vec![other],
+            };
+            for it in items {
+                let (Some(sym), Some(b), Some(bq), Some(a), Some(aq)) = (
+                    it.get("symbol").and_then(Value::as_str),
+                    it.get("bidPrice").and_then(Value::as_str),
+                    it.get("bidQty").and_then(Value::as_str),
+                    it.get("askPrice").and_then(Value::as_str),
+                    it.get("askQty").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                let Some(pair) = upper.get(&sym.to_ascii_uppercase()) else {
+                    continue;
+                };
+                let tob = TopOfBook {
+                    exchange: self.id,
+                    pair: pair.clone(),
+                    bid: parse_dec(b)?,
+                    bid_qty: parse_dec(bq)?,
+                    ask: parse_dec(a)?,
+                    ask_qty: parse_dec(aq)?,
+                    received_at: Instant::now(),
+                    received_ms: now_ms(),
+                };
+                if tx.send(tob).await.is_err() {
+                    return Ok(());
+                }
+            }
+        }
     }
 }
 
@@ -420,6 +499,74 @@ impl Exchange for Binance {
         Ok(OrderResult::nothing(client_id, OrderStatus::Unknown))
     }
 
+    async fn place_post_only(&self, req: &OrderRequest) -> Result<OrderResult, ExchangeError> {
+        let symbol = self.symbol(&req.pair)?.to_string();
+        let params = [
+            ("symbol", symbol),
+            (
+                "side",
+                match req.side {
+                    Side::Buy => "BUY",
+                    Side::Sell => "SELL",
+                }
+                .to_string(),
+            ),
+            ("type", "LIMIT_MAKER".to_string()),
+            ("quantity", req.qty.normalize().to_string()),
+            ("price", req.limit_price.normalize().to_string()),
+            ("newClientOrderId", req.client_id.clone()),
+            ("newOrderRespType", "RESULT".to_string()),
+        ];
+        let v = match self
+            .signed(reqwest::Method::POST, "/api/v3/order", &params)
+            .await
+        {
+            Ok(v) => v,
+            // -2010 with "would immediately match" = post-only rejection, non-fatal.
+            Err(ExchangeError::Rejected(m))
+                if m.contains("immediately match") || m.contains("-2010") =>
+            {
+                return Ok(OrderResult::nothing(&req.client_id, OrderStatus::Rejected));
+            }
+            Err(e) => return Err(e),
+        };
+        let fees = *self.fee_cache.lock().unwrap();
+        let mut r = self.parse_order(&req.pair, &v, fees.as_ref())?;
+        r.client_id = req.client_id.clone();
+        if r.status == OrderStatus::Unknown {
+            r.status = OrderStatus::Open;
+        }
+        Ok(r)
+    }
+
+    async fn cancel_order(
+        &self,
+        pair: &Pair,
+        client_id: &str,
+        _xid: Option<&str>,
+    ) -> Result<(), ExchangeError> {
+        let symbol = self.symbol(pair)?.to_string();
+        match self
+            .signed(
+                reqwest::Method::DELETE,
+                "/api/v3/order",
+                &[
+                    ("symbol", symbol),
+                    ("origClientOrderId", client_id.to_string()),
+                ],
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(ExchangeError::BadResponse(m))
+                if m.contains("not found") || m.contains("-2011") =>
+            {
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     async fn stream_top_of_book(
         &self,
         pairs: Vec<Pair>,
@@ -437,7 +584,16 @@ impl Exchange for Binance {
             )));
         }
         let url = format!("{}/stream?streams={}", self.ws_base, streams.join("/"));
-        let mut ws = ws_connect(&url).await?;
+        let mut ws = match ws_connect(&url).await {
+            Ok(ws) => ws,
+            Err(e) => {
+                // Some networks block the 9443 stream port. Fall back to polling
+                // the public REST book ticker once a second: coarser, but the
+                // staleness checks downstream keep it honest.
+                tracing::warn!(exchange = %self.id, error = %e, "websocket unavailable; polling REST bookTicker at 1 Hz");
+                return self.poll_top_of_book(pairs, tx).await;
+            }
+        };
         tracing::info!(exchange = %self.id, ?streams, "subscribed");
         let upper: HashMap<String, Pair> = self
             .pairs

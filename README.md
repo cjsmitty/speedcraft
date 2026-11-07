@@ -28,6 +28,47 @@ tier turns that into a loss, so the bot did nothing, which is the correct
 outcome. Run your own overnight `record` and `replay` before believing
 anything else.
 
+## Altcoins: what the data says
+
+`speedcraft scan` ranks every pair in a recording by the cross-exchange edge
+that actually existed, at retail, volume-tier and zero fees, for both
+taker-taker arbitrage and maker mode. Two recordings of 24 USD pairs were
+taken while building this (Nov 2026, ~20 minutes each; full tables in
+`docs/RESEARCH.md`):
+
+- **Coinbase + Kraken only:** no coin is positive in either mode at any
+  realistic fee tier. The widest gap was INJ at 27 bps once; retail round-trip
+  fees are 102 bps. Altcoins have wider spreads than BTC, but fees are a
+  percentage, so "less fees in altcoins" is not a thing.
+- **Adding Binance.US** (0% maker, 0.02% taker) changes it. Quoting on
+  Binance.US and hedging on Kraken shows positive maker-mode edge at retail
+  fees on OP, ATOM, AAVE and BCH, and BCH is within a few bps of break-even
+  even for plain arbitrage at a Coinbase volume tier. Caveat: those Binance.US
+  books are thin, and a resting quote only earns when someone hits it. Run
+  maker mode in paper on those pairs and read the fill count before
+  believing the scan.
+
+```sh
+./target/release/speedcraft -c config/alts3.toml record --out alts.jsonl --seconds 28800
+./target/release/speedcraft -c config/alts3.toml scan alts.jsonl
+```
+
+`config/alts.toml` (Coinbase + Kraken) and `config/alts3.toml` (plus
+Binance.US) map the 24-coin basket. Kraken's XBT/XDG legacy names are handled.
+
+## Maker mode
+
+Taker-taker arbitrage pays two taker fees. Maker mode rests **post-only**
+quotes on the cheapest-maker venue, priced off the other venue's book so that
+a fill plus an immediate taker hedge still nets `target_edge_bps`. You earn the
+spread instead of paying it. The cost is adverse selection, which shows up
+honestly in realised PnL. Enable it in the `[maker]` section of the config;
+the UI shows resting quotes, inventory and fills per pair. Fills are hedged
+with the same crossing logic that unwinds one-legged arbitrage, and every
+halt, STOP file or shutdown cancels all resting quotes first. Live post-only
+and cancel are implemented for Coinbase (`limit_limit_gtc` + `post_only`),
+Kraken (`oflags=post`) and Binance/Binance.US (`LIMIT_MAKER`).
+
 ## The app
 
 ```sh
@@ -69,7 +110,9 @@ cargo build --release
 
 Pure-Rust TLS with the system keychain as trust store. No OpenSSL, no Homebrew
 dependencies. Apple Silicon, Intel Macs and Linux all build with the same
-command.
+command. WebSocket connections honor `HTTPS_PROXY`, and the Binance connector
+falls back to polling the REST book ticker at 1 Hz if its stream port (9443)
+is blocked.
 
 ## Run
 
@@ -80,6 +123,7 @@ cp config/example.toml config.toml   # edit fee floors, pairs, limits
 ./target/release/speedcraft record --out quotes.jsonl --seconds 28800   # overnight capture
 ./target/release/speedcraft replay quotes.jsonl                          # backtest it
 ./target/release/speedcraft report ledger.jsonl
+./target/release/speedcraft scan quotes.jsonl   # rank pairs by real edge at several fee tiers
 ./target/release/speedcraft ui       # the control panel (see above)
 ./target/release/speedcraft agent    # headless mode for servers (see docs/REMOTE.md)
 ```
@@ -144,7 +188,9 @@ afford to lose on any exchange.
 cargo test
 ```
 
-61 tests: strategy math with exact decimal expectations, risk state machine,
+71 tests: strategy math with exact decimal expectations, maker quote math,
+maker manager end to end (rest, fill, hedge, inventory cap, halt cancels),
+the scan ranker, risk state machine,
 paper exchange fills, two-leg executor including unwind, Kraken HMAC-SHA512
 against the official vector, Binance HMAC-SHA256 against the official vector,
 Coinbase ES256 JWT round-trip verification, config validation, the HTTP API
@@ -167,6 +213,9 @@ src/server/            supervisor (start/stop/halt/resume), HTTP API, agent regi
 src/runtime.rs         exchange construction and engine lifecycle shared by CLI, UI and agent
 src/engine.rs          event loop: quotes -> strategy -> risk -> executor -> ledger
 src/strategy/arb.rs    pure opportunity math
+src/strategy/maker.rs  pure maker quote math
+src/maker.rs           maker manager: rest / cancel / poll / hedge
+src/scan.rs            rank pairs in a recording by real edge
 src/risk.rs            limits, kill switch, circuit breakers
 src/executor.rs        concurrent IOC legs + unwind
 src/exchanges/         trait, paper, coinbase, kraken, binance

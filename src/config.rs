@@ -25,6 +25,46 @@ pub struct Config {
     pub stop_file: String,
     #[serde(default)]
     pub paper: PaperConfig,
+    #[serde(default)]
+    pub maker: Option<MakerConfig>,
+}
+
+/// Maker mode: rest post-only quotes on `quote_exchange`, hedge fills with
+/// taker orders on `hedge_exchange`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MakerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub quote_exchange: ExchangeId,
+    pub hedge_exchange: ExchangeId,
+    /// Required net edge per round trip after both fees, bps.
+    pub target_edge_bps: Decimal,
+    /// Size of each resting quote in quote currency.
+    pub quote_notional: Decimal,
+    /// Cap on net base inventory accumulated on the quote venue, in quote currency.
+    pub max_inventory_notional: Decimal,
+    /// Re-post when the desired price moves more than this, bps.
+    #[serde(default = "default_requote_bps")]
+    pub requote_bps: Decimal,
+    /// Join the best level or improve it by at most this, bps.
+    #[serde(default = "default_improve_bps")]
+    pub max_improve_bps: Decimal,
+    /// How often to poll a resting order's status, ms.
+    #[serde(default = "default_fill_poll_ms")]
+    pub fill_poll_ms: u64,
+    /// Restrict to these pairs (default: all configured pairs on both venues).
+    #[serde(default)]
+    pub pairs: Option<Vec<String>>,
+}
+
+fn default_requote_bps() -> Decimal {
+    dec!(1)
+}
+fn default_improve_bps() -> Decimal {
+    dec!(1)
+}
+fn default_fill_poll_ms() -> u64 {
+    500
 }
 
 fn default_ledger_path() -> String {
@@ -226,6 +266,37 @@ impl Config {
         }
         if self.paper.sim_miss_probability < 0.0 || self.paper.sim_miss_probability > 1.0 {
             bail!("paper.sim_miss_probability must be in 0..=1");
+        }
+        if let Some(m) = &self.maker {
+            if m.enabled {
+                if m.quote_exchange == m.hedge_exchange {
+                    bail!("maker.quote_exchange and maker.hedge_exchange must differ");
+                }
+                for e in [m.quote_exchange, m.hedge_exchange] {
+                    if !enabled.contains(&e) {
+                        bail!("maker: exchange {e} is not enabled");
+                    }
+                }
+                if m.quote_notional <= Decimal::ZERO
+                    || m.max_inventory_notional <= Decimal::ZERO
+                    || m.target_edge_bps < Decimal::ZERO
+                {
+                    bail!("maker: quote_notional and max_inventory_notional must be > 0, target_edge_bps >= 0");
+                }
+                if m.fill_poll_ms < 100 {
+                    bail!("maker.fill_poll_ms must be >= 100");
+                }
+                if let Some(ps) = &m.pairs {
+                    for p in ps {
+                        let pair = Pair::parse(p).map_err(anyhow::Error::msg)?;
+                        if self.market_symbol(m.quote_exchange, &pair).is_none()
+                            || self.market_symbol(m.hedge_exchange, &pair).is_none()
+                        {
+                            bail!("maker: pair {p} is not mapped on both maker exchanges");
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }

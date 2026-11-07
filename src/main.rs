@@ -55,6 +55,16 @@ enum Cmd {
     },
     /// Replay a recorded quote file through the full pipeline with paper fills.
     Replay { file: PathBuf },
+    /// Rank pairs in a quote recording by real cross-exchange edge at several fee tiers.
+    Scan {
+        file: PathBuf,
+        /// Max ms between two venues' quotes to count as simultaneous.
+        #[arg(long, default_value_t = 3000)]
+        max_gap_ms: i64,
+        /// Also write the full stats as JSON here.
+        #[arg(long)]
+        json: Option<PathBuf>,
+    },
     /// Summarise a ledger file.
     Report {
         #[arg(default_value = "ledger.jsonl")]
@@ -427,6 +437,29 @@ async fn main() -> Result<()> {
                 println!("{p}: best net edge seen {} bps", e.round_dp(2));
             }
             println!("ledger: {}", engine.cfg.ledger_path);
+            Ok(())
+        }
+        Cmd::Scan {
+            file,
+            max_gap_ms,
+            json,
+        } => {
+            let quotes = read_quotes(&file)?;
+            let tiers = vec![
+                speedcraft::scan::FeeTier::retail(),
+                speedcraft::scan::FeeTier::volume(),
+                speedcraft::scan::FeeTier::uniform("zero", 0.0, 0.0, 0.0),
+            ];
+            let stats = speedcraft::scan::scan(&quotes, &tiers, max_gap_ms);
+            println!("{} quotes, {} pairs. Columns: venue spread (bps of mid), best directed gross cross (bps), % of samples crossed,", quotes.len(), stats.len());
+            println!("then per fee tier (ret=retail, vol=volume tier, zer=zero fees): taker-taker arbitrage net p95/max, maker-mode net p95 and % of samples positive.");
+            println!("Ranked by maker-mode net p95 at retail fees.");
+            println!("CAUTION: maker-mode edge assumes a resting quote at the venue's best level gets hit. On a thin market that may rarely happen; paper-run maker mode to measure fills.\n");
+            print!("{}", speedcraft::scan::render_table(&stats, &tiers));
+            if let Some(j) = json {
+                std::fs::write(&j, serde_json::to_string_pretty(&stats)?)?;
+                println!("\nwrote {}", j.display());
+            }
             Ok(())
         }
         Cmd::Report { file } => {

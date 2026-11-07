@@ -63,7 +63,7 @@ canvas { width: 100%; display: block; margin-bottom: 10px; }
 .events { max-height: 320px; overflow: auto; font-family: var(--mono); font-size: 12.5px; }
 .ev { display: grid; grid-template-columns: 90px 110px 1fr; gap: 10px; padding: 5px 4px; border-bottom: 1px solid var(--line); }
 .ev .t { color: var(--muted); } .ev .k { font-weight: 700; }
-.ev.trade .k { color: var(--accent); } .ev.halt .k { color: var(--red); } .ev.opportunity .k { color: var(--green); } .ev.rejected .k { color: var(--amber); }
+.ev.trade .k { color: var(--accent); } .ev.quote .k { color: var(--muted); } .ev.halt .k { color: var(--red); } .ev.opportunity .k { color: var(--green); } .ev.rejected .k { color: var(--amber); }
 .empty { color: var(--muted); padding: 10px 4px; font-style: italic; }
 textarea { width: 100%; min-height: 320px; font-family: var(--mono); font-size: 12.5px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px; resize: vertical; }
 .row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }

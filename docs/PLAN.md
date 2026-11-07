@@ -37,6 +37,35 @@ to tell you that rather than to lose money proving it.
   moving while an order waits.
 - Both legs are sent concurrently.
 
+## 1b. Maker mode (added later)
+
+Taker-taker arbitrage pays two taker fees, which is why it never clears at
+retail tiers. Maker mode flips one leg: rest a **post-only** limit order on
+the venue with the cheapest maker fee, priced off the *other* venue's book so
+that if it fills, an immediate taker hedge there still nets `target_edge_bps`
+after both fees. We earn the spread instead of paying it.
+
+- Bid price = hedge.bid × (1 − taker_hedge) / ((1 + maker_quote)(1 + edge)),
+  capped at joining the quote venue's best bid (or improving it by at most
+  `max_improve_bps`) and never crossing its ask.
+- Ask mirrors it off hedge.ask.
+- Sizes are capped by the quote venue's balance **and** by what the hedge
+  venue can sell or buy against the fill.
+- Fills are detected by polling order status (immediately when the quote
+  venue's book trades through our level) and hedged with the same crossing
+  IOC logic used to unwind one-legged arbitrage fills.
+- `max_inventory_notional` stops quoting the side that would grow the net
+  position further; the other side keeps working it down.
+- Halt, STOP file, circuit breaker and shutdown all cancel every resting
+  quote first.
+
+The new risk is **adverse selection**: a resting quote tends to fill right
+before the market moves against it, and the hedge then executes at a worse
+price. That loss is real and shows up in realised PnL; the paper exchange
+models it by filling at our price while the hedge happens at the then-current
+book. Whether maker mode is positive-expectancy at your fee tier is exactly
+what `speedcraft scan` measures (the `mkrP95` columns).
+
 ## 2. Loss paths and how each is handled
 
 | Loss path | Handling |
@@ -65,6 +94,9 @@ src/
   types.rs           Decimal money types, ExchangeId, Pair, TopOfBook, orders
   book.rs            Lock-free-ish shared top-of-book cache (DashMap)
   strategy/arb.rs    Pure opportunity math (unit tested exhaustively)
+  strategy/maker.rs  Pure maker quote math (prices, sizes, requote rule)
+  maker.rs           Maker manager: rest/cancel/poll/hedge, inventory
+  scan.rs            Rank pairs in a recording by real edge at several fee tiers
   risk.rs            Risk manager: limits, kill switch, circuit breakers
   executor.rs        Two-leg concurrent IOC execution + unwind logic
   ledger.rs          Append-only JSONL trade log + PnL summary

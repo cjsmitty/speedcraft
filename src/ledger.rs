@@ -52,6 +52,16 @@ pub enum LedgerEvent {
         ts_ms: i64,
         reason: String,
     },
+    Quote {
+        ts_ms: i64,
+        exchange: ExchangeId,
+        pair: Pair,
+        side: Side,
+        price: Decimal,
+        qty: Decimal,
+        expected_edge_bps: Decimal,
+        action: String,
+    },
     Resume {
         ts_ms: i64,
     },

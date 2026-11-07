@@ -144,6 +144,13 @@ impl RiskManager {
         Ok(())
     }
 
+    /// Maker fills do not go through `check`; mark the pair in-flight so the
+    /// following `record_outcome` keeps the bookkeeping consistent.
+    pub fn check_maker_slot(&mut self, pair: &Pair) -> bool {
+        self.in_flight.insert(pair.clone(), true);
+        true
+    }
+
     /// Record the realised result of a trade attempt that passed `check`.
     /// `success` means both legs matched as intended (no unwind, no unknown).
     pub fn record_outcome(&mut self, pair: &Pair, realised_pnl: Decimal, success: bool) {

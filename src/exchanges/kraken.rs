@@ -53,6 +53,12 @@ pub fn sign(
     Ok(base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes()))
 }
 
+/// Kraken's legacy asset codes to the names everyone else (and Kraken's own
+/// WebSocket v2) uses.
+pub fn kraken_to_common(sym: &str) -> String {
+    sym.replace("XBT", "BTC").replace("XDG", "DOGE")
+}
+
 /// Form-encode in a stable order with `nonce` first.
 pub fn encode_form(nonce: u64, params: &[(&str, String)]) -> String {
     let mut parts = vec![format!("nonce={nonce}")];
@@ -202,8 +208,8 @@ impl Kraken {
             let matches = wsname == want
                 || altname == want_nospace
                 || id == &want
-                || wsname.replace("XBT", "BTC") == want
-                || altname.replace("XBT", "BTC") == want_nospace;
+                || kraken_to_common(wsname) == want
+                || kraken_to_common(altname) == want_nospace;
             if !matches {
                 continue;
             }
@@ -266,7 +272,14 @@ impl Kraken {
                     OrderStatus::Cancelled
                 }
             }
-            "open" | "pending" => OrderStatus::Unknown,
+            "open" => {
+                if vol_exec > Decimal::ZERO {
+                    OrderStatus::PartiallyFilled
+                } else {
+                    OrderStatus::Open
+                }
+            }
+            "pending" => OrderStatus::Unknown,
             other => {
                 return Err(ExchangeError::BadResponse(format!(
                     "kraken order status {other}"
@@ -299,7 +312,7 @@ impl Kraken {
                 )));
             };
             let r = self.parse_order(client_id, txid, o)?;
-            if r.status != OrderStatus::Unknown {
+            if r.status != OrderStatus::Unknown && r.status != OrderStatus::Open {
                 return Ok(r);
             }
             last = Some(r);
@@ -437,6 +450,78 @@ impl Exchange for Kraken {
         self.parse_order(client_id, txid, o)
     }
 
+    async fn place_post_only(&self, req: &OrderRequest) -> Result<OrderResult, ExchangeError> {
+        let m = self.market(&req.pair).await?;
+        let params = [
+            ("ordertype", "limit".to_string()),
+            (
+                "type",
+                match req.side {
+                    Side::Buy => "buy",
+                    Side::Sell => "sell",
+                }
+                .to_string(),
+            ),
+            ("volume", req.qty.normalize().to_string()),
+            ("pair", m.altname.clone()),
+            ("price", req.limit_price.normalize().to_string()),
+            ("oflags", "post".to_string()),
+            ("cl_ord_id", req.client_id.clone()),
+        ];
+        let v = match self.private("/0/private/AddOrder", &params).await {
+            Ok(v) => v,
+            Err(ExchangeError::Rejected(m))
+                if m.contains("Post only") || m.contains("post only") =>
+            {
+                return Ok(OrderResult::nothing(&req.client_id, OrderStatus::Rejected));
+            }
+            Err(e) => return Err(e),
+        };
+        let txid = v
+            .get("txid")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(Value::as_str)
+            .ok_or_else(|| ExchangeError::BadResponse(format!("no txid in {v}")))?
+            .to_string();
+        self.order_ids
+            .lock()
+            .unwrap()
+            .insert(req.client_id.clone(), txid.clone());
+        Ok(OrderResult {
+            client_id: req.client_id.clone(),
+            exchange_order_id: Some(txid),
+            status: OrderStatus::Open,
+            filled_qty: Decimal::ZERO,
+            avg_price: Decimal::ZERO,
+            fee_quote: Decimal::ZERO,
+        })
+    }
+
+    async fn cancel_order(
+        &self,
+        _pair: &Pair,
+        client_id: &str,
+        exchange_order_id: Option<&str>,
+    ) -> Result<(), ExchangeError> {
+        let id = exchange_order_id
+            .map(String::from)
+            .or_else(|| self.order_ids.lock().unwrap().get(client_id).cloned())
+            .unwrap_or_else(|| client_id.to_string());
+        match self
+            .private("/0/private/CancelOrder", &[("txid", id)])
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(ExchangeError::BadResponse(m)) | Err(ExchangeError::Rejected(m))
+                if m.contains("Unknown order") =>
+            {
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     async fn stream_top_of_book(
         &self,
         pairs: Vec<Pair>,
@@ -456,8 +541,8 @@ impl Exchange for Kraken {
             } else {
                 m.wsname.clone()
             };
-            // Kraken v2 uses BTC not XBT in symbols.
-            let ws = ws.replace("XBT", "BTC");
+            // Kraken v2 uses BTC/DOGE, not XBT/XDG, in symbols.
+            let ws = kraken_to_common(&ws);
             sym_to_pair.insert(ws.clone(), p.clone());
             symbols.push(ws);
         }
@@ -541,6 +626,13 @@ mod tests {
             "nonce=1616492376594&ordertype=limit&pair=XBTUSD&price=37500&type=buy&volume=1.25";
         let sig = sign(secret, "/0/private/AddOrder", 1616492376594, body).unwrap();
         assert_eq!(sig, "4/dpxb3iT4tp/ZCVEwSnEsLxx0bqyhLpdfOpc6fn7OR8+UClSV5n9E6aSS8MPtnRfp32bAb0nmbRn6H8ndwLUQ==");
+    }
+
+    #[test]
+    fn legacy_codes_map_to_common_names() {
+        assert_eq!(kraken_to_common("XBT/USD"), "BTC/USD");
+        assert_eq!(kraken_to_common("XDGUSD"), "DOGEUSD");
+        assert_eq!(kraken_to_common("SOL/USD"), "SOL/USD");
     }
 
     #[test]

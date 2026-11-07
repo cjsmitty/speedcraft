@@ -72,6 +72,9 @@ pub struct StatusSnapshot {
     pub balances: HashMap<ExchangeId, HashMap<String, Decimal>>,
     pub fees_taker_bps: HashMap<ExchangeId, Decimal>,
     pub min_edge_bps: Decimal,
+    /// Maker-mode resting quotes and inventory per pair (empty when disabled).
+    #[serde(default)]
+    pub maker: Vec<crate::maker::MakerView>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -157,6 +160,7 @@ pub struct Engine {
     pub mode: String,
     pub shared: Option<Arc<Shared>>,
     pub control_rx: Option<mpsc::Receiver<Control>>,
+    pub maker: Option<crate::maker::MakerManager>,
     started_ms: i64,
     last_publish: Instant,
     quotes_at_last_publish: u64,
@@ -178,6 +182,29 @@ impl Engine {
             max_notional_quote: cfg.strategy.max_notional_quote,
         };
         let risk = RiskManager::new(cfg.risk.clone(), std::path::PathBuf::from(&cfg.stop_file));
+        let maker = match &cfg.maker {
+            Some(m) if m.enabled => match (
+                exchanges.get(&m.quote_exchange),
+                exchanges.get(&m.hedge_exchange),
+            ) {
+                (Some(q), Some(h)) => {
+                    tracing::info!(quote = %m.quote_exchange, hedge = %m.hedge_exchange, edge_bps = %m.target_edge_bps, "maker mode enabled");
+                    Some(crate::maker::MakerManager::new(
+                        m.clone(),
+                        cfg.strategy.slippage_buffer_bps,
+                        q.clone(),
+                        h.clone(),
+                    ))
+                }
+                _ => {
+                    tracing::error!(
+                        "maker mode configured but its exchanges are not available; disabled"
+                    );
+                    None
+                }
+            },
+            _ => None,
+        };
         Engine {
             cfg,
             exchanges,
@@ -194,6 +221,7 @@ impl Engine {
             mode: mode.to_string(),
             shared: None,
             control_rx: None,
+            maker,
             started_ms: now_ms(),
             last_publish: Instant::now(),
             quotes_at_last_publish: 0,
@@ -295,6 +323,7 @@ impl Engine {
             balances: self.per_pair_balances.clone(),
             fees_taker_bps: self.fees.iter().map(|(e, f)| (*e, f.taker_bps)).collect(),
             min_edge_bps: self.params.min_edge_bps,
+            maker: self.maker.as_ref().map(|m| m.views()).unwrap_or_default(),
         }
     }
 
@@ -307,7 +336,7 @@ impl Engine {
         }
     }
 
-    fn apply_control(&mut self, c: Control) {
+    async fn apply_control(&mut self, c: Control) {
         match c {
             Control::Halt { reason } => {
                 self.risk.halt(reason.clone());
@@ -413,6 +442,112 @@ impl Engine {
     /// Evaluate one pair; execute if the risk manager allows. Returns true
     /// if a trade was attempted.
     pub async fn evaluate_pair(&mut self, pair: &Pair) -> bool {
+        let traded = self.evaluate_arb(pair).await;
+        if self.maker.is_some() {
+            self.maker_tick(pair).await;
+        }
+        traded
+    }
+
+    /// Maker mode pass for one pair: fills are hedged and accounted here.
+    async fn maker_tick(&mut self, pair: &Pair) {
+        let Some(mut maker) = self.maker.take() else {
+            return;
+        };
+        if !maker.handles(pair) {
+            self.maker = Some(maker);
+            return;
+        }
+        let allowed = self.risk.is_halted().is_none()
+            && !self.risk.stop_file_present()
+            && !self.risk.is_exchange_disabled(maker.cfg.quote_exchange)
+            && !self.risk.is_exchange_disabled(maker.cfg.hedge_exchange);
+        let get = |ex: ExchangeId, asset: &str| {
+            self.per_pair_balances
+                .get(&ex)
+                .and_then(|b| b.get(asset))
+                .copied()
+                .unwrap_or(Decimal::ZERO)
+        };
+        let balances = crate::strategy::maker::MakerBalances {
+            quote_venue_quote: get(maker.cfg.quote_exchange, &pair.quote),
+            quote_venue_base: get(maker.cfg.quote_exchange, &pair.base),
+            hedge_venue_quote: get(maker.cfg.hedge_exchange, &pair.quote),
+            hedge_venue_base: get(maker.cfg.hedge_exchange, &pair.base),
+        };
+        let max_age = Duration::from_millis(self.cfg.strategy.max_quote_age_ms);
+        let (events, fills) = maker
+            .tick(
+                pair,
+                &self.book,
+                &self.fees,
+                &self.rules,
+                balances,
+                max_age,
+                allowed,
+                &self.cfg.risk,
+            )
+            .await;
+        let quote_ex = maker.cfg.quote_exchange;
+        let hedge_ex = maker.cfg.hedge_exchange;
+        self.maker = Some(maker);
+        for ev in events {
+            self.emit(ev);
+        }
+        for f in fills {
+            tracing::info!(pair = %pair, side = %f.side, qty = %f.qty, price = %f.price, pnl = %f.outcome.realised_pnl, success = f.outcome.success, "MAKER FILL hedged");
+            for ex in &f.outcome.exchange_errors {
+                self.risk.record_exchange_error(*ex);
+            }
+            self.emit(LedgerEvent::Trade {
+                ts_ms: now_ms(),
+                pair: pair.clone(),
+                buy_exchange: if f.side == crate::types::Side::Buy {
+                    quote_ex
+                } else {
+                    hedge_ex
+                },
+                sell_exchange: if f.side == crate::types::Side::Buy {
+                    hedge_ex
+                } else {
+                    quote_ex
+                },
+                matched_qty: f.outcome.matched_qty,
+                realised_pnl_quote: f.outcome.realised_pnl,
+                expected_pnl_quote: Decimal::ZERO,
+                success: f.outcome.success,
+                note: format!("maker: {}", f.outcome.note),
+            });
+            // Maker fills bypass the arb in-flight lock; mark it so cooldown applies.
+            let _ = self.risk.check_maker_slot(pair);
+            self.risk
+                .record_outcome(pair, f.outcome.realised_pnl, f.outcome.success);
+            if let Some(h) = f.outcome.halt {
+                self.risk.halt(h.clone());
+                self.emit(LedgerEvent::Halt {
+                    ts_ms: now_ms(),
+                    reason: h,
+                });
+            }
+            if let Err(e) = self.refresh_balances(Some(&[quote_ex, hedge_ex])).await {
+                tracing::error!(error = %e, "balance refresh after maker fill failed");
+            }
+        }
+    }
+
+    /// Cancel all maker quotes (shutdown or halt).
+    pub async fn maker_cancel_all(&mut self) {
+        let Some(mut maker) = self.maker.take() else {
+            return;
+        };
+        let events = maker.cancel_all(None).await;
+        self.maker = Some(maker);
+        for ev in events {
+            self.emit(ev);
+        }
+    }
+
+    async fn evaluate_arb(&mut self, pair: &Pair) -> bool {
         let books = self.book.snapshot(
             pair,
             Duration::from_millis(self.cfg.strategy.max_quote_age_ms),
@@ -595,7 +730,7 @@ impl Engine {
                 }
                 c = async { match control_rx.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
                     match c {
-                        Some(c) => self.apply_control(c),
+                        Some(c) => self.apply_control(c).await,
                         None => control_rx = None,
                     }
                 }
@@ -621,6 +756,7 @@ impl Engine {
                 }
             }
         }
+        self.maker_cancel_all().await;
         self.emit(LedgerEvent::Stop { ts_ms: now_ms() });
         self.publish();
         tracing::info!("{}", self.status_line());

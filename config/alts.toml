@@ -1,0 +1,217 @@
+# Speedcraft configuration. Copy to config.toml and edit.
+#
+# PAPER MODE IS THE DEFAULT. To trade for real you must set live = true here,
+# pass --live on the command line, AND export SPEEDCRAFT_I_ACCEPT_LOSSES=yes.
+# All three. Each one alone does nothing.
+
+live = false
+ledger_path = "ledger.jsonl"
+stop_file = "STOP"          # `touch STOP` halts the bot within one loop
+
+[strategy]
+min_edge_bps = 5            # trade only if net edge after fees+buffer >= 0.05%
+min_profit_quote = 0.50     # and expected net profit >= $0.50
+slippage_buffer_bps = 2     # subtracted from every edge estimate
+depth_fraction = 0.5        # take at most half the displayed top-of-book size
+max_quote_age_ms = 750      # ignore quotes older than this
+max_notional_quote = 500    # per leg, per trade
+
+[risk]
+max_daily_loss_quote = 25   # halt for the UTC day below -$25 realised
+max_consecutive_failures = 3
+max_consecutive_errors = 5
+pair_cooldown_ms = 2000
+max_trades_per_day = 200
+order_timeout_ms = 3000
+unwind_cross_bps = 20       # cross the book 0.20% when unwinding a bad leg
+
+# Fee floors in basis points. At startup the bot fetches your real fee tier and
+# uses the HIGHER of this value and the fetched one. Put your true tier here.
+[exchanges.coinbase]
+enabled = true
+taker_fee_bps = 60          # Coinbase Advanced lowest tier (verify yours)
+maker_fee_bps = 40
+
+[exchanges.kraken]
+enabled = true
+taker_fee_bps = 40          # Kraken Pro lowest tier (verify yours)
+maker_fee_bps = 25
+
+[exchanges.binance]
+enabled = false             # global Binance; unavailable to US persons
+taker_fee_bps = 10
+maker_fee_bps = 10
+
+[exchanges.binance_us]
+enabled = false
+taker_fee_bps = 2
+maker_fee_bps = 0
+
+# Altcoin basket: every USD pair below is listed on both Coinbase and Kraken.
+[[pairs]]
+pair = "BTC/USD"
+[pairs.markets]
+coinbase = "BTC-USD"
+kraken = "BTC/USD"
+
+[[pairs]]
+pair = "ETH/USD"
+[pairs.markets]
+coinbase = "ETH-USD"
+kraken = "ETH/USD"
+
+[[pairs]]
+pair = "XRP/USD"
+[pairs.markets]
+coinbase = "XRP-USD"
+kraken = "XRP/USD"
+
+[[pairs]]
+pair = "SOL/USD"
+[pairs.markets]
+coinbase = "SOL-USD"
+kraken = "SOL/USD"
+
+[[pairs]]
+pair = "NEAR/USD"
+[pairs.markets]
+coinbase = "NEAR-USD"
+kraken = "NEAR/USD"
+
+[[pairs]]
+pair = "UNI/USD"
+[pairs.markets]
+coinbase = "UNI-USD"
+kraken = "UNI/USD"
+
+[[pairs]]
+pair = "XLM/USD"
+[pairs.markets]
+coinbase = "XLM-USD"
+kraken = "XLM/USD"
+
+[[pairs]]
+pair = "SUI/USD"
+[pairs.markets]
+coinbase = "SUI-USD"
+kraken = "SUI/USD"
+
+[[pairs]]
+pair = "LTC/USD"
+[pairs.markets]
+coinbase = "LTC-USD"
+kraken = "LTC/USD"
+
+[[pairs]]
+pair = "LINK/USD"
+[pairs.markets]
+coinbase = "LINK-USD"
+kraken = "LINK/USD"
+
+[[pairs]]
+pair = "ADA/USD"
+[pairs.markets]
+coinbase = "ADA-USD"
+kraken = "ADA/USD"
+
+[[pairs]]
+pair = "DOGE/USD"
+[pairs.markets]
+coinbase = "DOGE-USD"
+kraken = "DOGE/USD"
+
+[[pairs]]
+pair = "PEPE/USD"
+[pairs.markets]
+coinbase = "PEPE-USD"
+kraken = "PEPE/USD"
+
+[[pairs]]
+pair = "INJ/USD"
+[pairs.markets]
+coinbase = "INJ-USD"
+kraken = "INJ/USD"
+
+[[pairs]]
+pair = "HBAR/USD"
+[pairs.markets]
+coinbase = "HBAR-USD"
+kraken = "HBAR/USD"
+
+[[pairs]]
+pair = "AVAX/USD"
+[pairs.markets]
+coinbase = "AVAX-USD"
+kraken = "AVAX/USD"
+
+[[pairs]]
+pair = "ONDO/USD"
+[pairs.markets]
+coinbase = "ONDO-USD"
+kraken = "ONDO/USD"
+
+[[pairs]]
+pair = "ARB/USD"
+[pairs.markets]
+coinbase = "ARB-USD"
+kraken = "ARB/USD"
+
+[[pairs]]
+pair = "DOT/USD"
+[pairs.markets]
+coinbase = "DOT-USD"
+kraken = "DOT/USD"
+
+[[pairs]]
+pair = "ATOM/USD"
+[pairs.markets]
+coinbase = "ATOM-USD"
+kraken = "ATOM/USD"
+
+[[pairs]]
+pair = "SHIB/USD"
+[pairs.markets]
+coinbase = "SHIB-USD"
+kraken = "SHIB/USD"
+
+[[pairs]]
+pair = "OP/USD"
+[pairs.markets]
+coinbase = "OP-USD"
+kraken = "OP/USD"
+
+[[pairs]]
+pair = "BCH/USD"
+[pairs.markets]
+coinbase = "BCH-USD"
+kraken = "BCH/USD"
+
+[[pairs]]
+pair = "AAVE/USD"
+[pairs.markets]
+coinbase = "AAVE-USD"
+kraken = "AAVE/USD"
+
+# Maker mode (off by default). Rest post-only quotes on quote_exchange priced
+# off hedge_exchange's book; every fill is hedged at once with a taker order on
+# hedge_exchange. Earns the spread instead of paying it. Risk: adverse
+# selection (you get filled right before the market moves). Run `scan` on a
+# recording first: the "mkrP95" columns show whether this can clear your fees.
+[maker]
+enabled = false
+quote_exchange = "kraken"      # cheapest maker fee you have access to
+hedge_exchange = "coinbase"    # where fills are hedged (pays taker)
+target_edge_bps = 5            # required net edge after both fees
+quote_notional = 50            # size of each resting quote, quote currency
+max_inventory_notional = 300   # stop quoting one side beyond this net position
+requote_bps = 1                # re-post when the fair price moves this much
+max_improve_bps = 1            # join the best level or improve it by at most this
+fill_poll_ms = 500
+# pairs = ["ATOM/USD", "INJ/USD"]   # default: all pairs mapped on both venues
+
+[paper]
+start_quote = 10000
+start_base = 0.2
+sim_slippage_bps = 1
+sim_latency_ms = 50
+sim_miss_probability = 0.0

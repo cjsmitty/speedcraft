@@ -25,6 +25,8 @@ pub struct PaperExchange {
     rules: HashMap<Pair, MarketRules>,
     balances: Mutex<Balances>,
     orders: Mutex<HashMap<String, OrderResult>>,
+    /// Resting post-only orders: client_id -> request.
+    resting: Mutex<HashMap<String, OrderRequest>>,
 }
 
 impl PaperExchange {
@@ -53,7 +55,54 @@ impl PaperExchange {
             rules,
             balances: Mutex::new(balances),
             orders: Mutex::new(HashMap::new()),
+            resting: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// A resting bid fills when the venue's best ask trades down to or
+    /// through its price; a resting ask fills when the best bid rises to or
+    /// through it. That is when real counterparties would have hit us.
+    fn settle_resting(&self, client_id: &str) {
+        let req = { self.resting.lock().unwrap().get(client_id).cloned() };
+        let Some(req) = req else { return };
+        let Some(q) = self.book.get(self.id, &req.pair) else {
+            return;
+        };
+        let crossed = match req.side {
+            Side::Buy => q.ask <= req.limit_price,
+            Side::Sell => q.bid >= req.limit_price,
+        };
+        if !crossed {
+            return;
+        }
+        // Fill at our limit price (maker gets their price), full size.
+        let px = req.limit_price;
+        let notional = req.qty * px;
+        let fee = notional * self.fees.maker_rate();
+        let mut bal = self.balances.lock().unwrap();
+        let base = bal.entry(req.pair.base.clone()).or_insert(Decimal::ZERO);
+        match req.side {
+            Side::Buy => *base += req.qty,
+            Side::Sell => *base -= req.qty,
+        }
+        let quote_bal = bal.entry(req.pair.quote.clone()).or_insert(Decimal::ZERO);
+        match req.side {
+            Side::Buy => *quote_bal -= notional + fee,
+            Side::Sell => *quote_bal += notional - fee,
+        }
+        drop(bal);
+        self.resting.lock().unwrap().remove(client_id);
+        self.orders.lock().unwrap().insert(
+            client_id.to_string(),
+            OrderResult {
+                client_id: client_id.to_string(),
+                exchange_order_id: Some(format!("paper-{client_id}")),
+                status: OrderStatus::Filled,
+                filled_qty: req.qty,
+                avg_price: px,
+                fee_quote: fee,
+            },
+        );
     }
 
     pub fn set_rules(&mut self, pair: Pair, rules: MarketRules) {
@@ -163,12 +212,72 @@ impl Exchange for PaperExchange {
         Ok(r)
     }
 
+    async fn place_post_only(&self, req: &OrderRequest) -> Result<OrderResult, ExchangeError> {
+        if self.cfg.sim_latency_ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(self.cfg.sim_latency_ms)).await;
+        }
+        let q = self.book.get(self.id, &req.pair);
+        let would_cross = match (&q, req.side) {
+            (Some(q), Side::Buy) => req.limit_price >= q.ask,
+            (Some(q), Side::Sell) => req.limit_price <= q.bid,
+            (None, _) => false,
+        };
+        if would_cross {
+            let r = OrderResult::nothing(&req.client_id, OrderStatus::Rejected);
+            self.orders
+                .lock()
+                .unwrap()
+                .insert(req.client_id.clone(), r.clone());
+            return Ok(r);
+        }
+        if req.side == Side::Sell {
+            let bal = self.balances.lock().unwrap();
+            if bal.get(&req.pair.base).copied().unwrap_or(Decimal::ZERO) < req.qty {
+                return Err(ExchangeError::Rejected("insufficient base balance".into()));
+            }
+        }
+        let r = OrderResult {
+            client_id: req.client_id.clone(),
+            exchange_order_id: Some(format!("paper-{}", req.client_id)),
+            status: OrderStatus::Open,
+            filled_qty: Decimal::ZERO,
+            avg_price: Decimal::ZERO,
+            fee_quote: Decimal::ZERO,
+        };
+        self.resting
+            .lock()
+            .unwrap()
+            .insert(req.client_id.clone(), req.clone());
+        self.orders
+            .lock()
+            .unwrap()
+            .insert(req.client_id.clone(), r.clone());
+        Ok(r)
+    }
+
+    async fn cancel_order(
+        &self,
+        _pair: &Pair,
+        client_id: &str,
+        _xid: Option<&str>,
+    ) -> Result<(), ExchangeError> {
+        // Settle first: a fill that happened before the cancel arrived stands.
+        self.settle_resting(client_id);
+        if self.resting.lock().unwrap().remove(client_id).is_some() {
+            if let Some(o) = self.orders.lock().unwrap().get_mut(client_id) {
+                o.status = OrderStatus::Cancelled;
+            }
+        }
+        Ok(())
+    }
+
     async fn fetch_order(
         &self,
         _pair: &Pair,
         client_id: &str,
         _xid: Option<&str>,
     ) -> Result<OrderResult, ExchangeError> {
+        self.settle_resting(client_id);
         self.orders
             .lock()
             .unwrap()
@@ -285,6 +394,76 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r.status, OrderStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn post_only_rests_then_fills_when_market_trades_through() {
+        let (ex, book, pair) = setup(dec!(0));
+        // Bid at 100.5 while ask is 101: rests.
+        let req = OrderRequest {
+            client_id: "m1".into(),
+            pair: pair.clone(),
+            side: Side::Buy,
+            qty: dec!(0.1),
+            limit_price: dec!(100.5),
+        };
+        let r = ex.place_post_only(&req).await.unwrap();
+        assert_eq!(r.status, OrderStatus::Open);
+        assert_eq!(
+            ex.fetch_order(&pair, "m1", None).await.unwrap().status,
+            OrderStatus::Open
+        );
+        // A bid at or above the ask would cross: rejected, nothing rests.
+        let bad = OrderRequest {
+            client_id: "m2".into(),
+            pair: pair.clone(),
+            side: Side::Buy,
+            qty: dec!(0.1),
+            limit_price: dec!(101),
+        };
+        assert_eq!(
+            ex.place_post_only(&bad).await.unwrap().status,
+            OrderStatus::Rejected
+        );
+        // Market trades down through our bid: filled at our price with maker fee.
+        book.update(TopOfBook {
+            exchange: ExchangeId::Kraken,
+            pair: pair.clone(),
+            bid: dec!(100.0),
+            bid_qty: dec!(1),
+            ask: dec!(100.4),
+            ask_qty: dec!(1),
+            received_at: Instant::now(),
+            received_ms: 0,
+        });
+        let f = ex.fetch_order(&pair, "m1", None).await.unwrap();
+        assert_eq!(f.status, OrderStatus::Filled);
+        assert_eq!(f.avg_price, dec!(100.5));
+        assert_eq!(f.fee_quote, dec!(0.1) * dec!(100.5) * dec!(0.001));
+        assert_eq!(ex.balances_snapshot()["BTC"], dec!(0.3));
+        // Cancel of a filled order is a no-op; cancel of a resting one removes it.
+        ex.cancel_order(&pair, "m1", None).await.unwrap();
+        assert_eq!(
+            ex.fetch_order(&pair, "m1", None).await.unwrap().status,
+            OrderStatus::Filled
+        );
+        let ask = OrderRequest {
+            client_id: "m3".into(),
+            pair: pair.clone(),
+            side: Side::Sell,
+            qty: dec!(0.1),
+            limit_price: dec!(101.5),
+        };
+        assert_eq!(
+            ex.place_post_only(&ask).await.unwrap().status,
+            OrderStatus::Open
+        );
+        ex.cancel_order(&pair, "m3", None).await.unwrap();
+        assert_eq!(
+            ex.fetch_order(&pair, "m3", None).await.unwrap().status,
+            OrderStatus::Cancelled
+        );
+        assert_eq!(ex.balances_snapshot()["BTC"], dec!(0.3));
     }
 
     #[tokio::test]

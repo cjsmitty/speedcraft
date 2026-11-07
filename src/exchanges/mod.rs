@@ -63,6 +63,30 @@ pub trait Exchange: Send + Sync {
         exchange_order_id: Option<&str>,
     ) -> Result<OrderResult, ExchangeError>;
 
+    /// Rest a post-only limit order (maker mode). Returns status Open with
+    /// the exchange order id, or Rejected if it would have crossed.
+    async fn place_post_only(&self, req: &OrderRequest) -> Result<OrderResult, ExchangeError> {
+        let _ = req;
+        Err(ExchangeError::Unsupported(format!(
+            "{}: post-only orders not implemented",
+            self.id()
+        )))
+    }
+
+    /// Cancel a resting order. Ok if it is already gone.
+    async fn cancel_order(
+        &self,
+        pair: &Pair,
+        client_id: &str,
+        exchange_order_id: Option<&str>,
+    ) -> Result<(), ExchangeError> {
+        let _ = (pair, client_id, exchange_order_id);
+        Err(ExchangeError::Unsupported(format!(
+            "{}: cancel not implemented",
+            self.id()
+        )))
+    }
+
     /// Stream top-of-book updates for `pairs` until the connection drops.
     /// The engine reconnects on return.
     async fn stream_top_of_book(
@@ -106,20 +130,91 @@ pub fn canonical_asset(code: &str) -> String {
     }
 }
 
-/// Generic WebSocket connect with the rustls connector.
-pub async fn ws_connect(
-    url: &str,
-) -> Result<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    ExchangeError,
-> {
-    let (ws, _) = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tokio_tungstenite::connect_async(url),
-    )
-    .await
-    .map_err(|_| ExchangeError::Network(format!("ws connect timeout {url}")))?
-    .map_err(|e| ExchangeError::Network(format!("ws connect {url}: {e}")))?;
+pub type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Generic WebSocket connect with the rustls connector. Honors HTTPS_PROXY /
+/// https_proxy (an `http://host:port` CONNECT proxy) so the bot works behind
+/// corporate proxies and in sandboxes that only allow proxied egress.
+pub async fn ws_connect(url: &str) -> Result<WsStream, ExchangeError> {
+    let t = std::time::Duration::from_secs(10);
+    let proxy = std::env::var("HTTPS_PROXY")
+        .or_else(|_| std::env::var("https_proxy"))
+        .ok()
+        .filter(|p| !p.is_empty());
+    let fut = async {
+        match proxy {
+            None => {
+                let (ws, _) = tokio_tungstenite::connect_async(url)
+                    .await
+                    .map_err(|e| ExchangeError::Network(format!("ws connect {url}: {e}")))?;
+                Ok::<WsStream, ExchangeError>(ws)
+            }
+            Some(p) => ws_connect_via_proxy(url, &p).await,
+        }
+    };
+    tokio::time::timeout(t, fut)
+        .await
+        .map_err(|_| ExchangeError::Network(format!("ws connect timeout {url}")))?
+}
+
+async fn ws_connect_via_proxy(url: &str, proxy: &str) -> Result<WsStream, ExchangeError> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let target = url::Url::parse(url)
+        .map_err(|e| ExchangeError::Network(format!("bad ws url {url}: {e}")))?;
+    let host = target
+        .host_str()
+        .ok_or_else(|| ExchangeError::Network(format!("no host in {url}")))?
+        .to_string();
+    let port = target.port_or_known_default().unwrap_or(443);
+    let purl = url::Url::parse(proxy)
+        .map_err(|e| ExchangeError::Network(format!("bad proxy url {proxy}: {e}")))?;
+    let phost = purl
+        .host_str()
+        .ok_or_else(|| ExchangeError::Network("proxy url has no host".into()))?;
+    let pport = purl.port_or_known_default().unwrap_or(80);
+    let mut tcp = tokio::net::TcpStream::connect((phost, pport))
+        .await
+        .map_err(|e| ExchangeError::Network(format!("proxy connect {phost}:{pport}: {e}")))?;
+    tcp.write_all(format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\nProxy-Connection: keep-alive\r\n\r\n").as_bytes())
+        .await
+        .map_err(|e| ExchangeError::Network(format!("proxy CONNECT write: {e}")))?;
+    // Read the proxy's response headers (up to the blank line).
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        let n = tcp
+            .read(&mut byte)
+            .await
+            .map_err(|e| ExchangeError::Network(format!("proxy CONNECT read: {e}")))?;
+        if n == 0 {
+            return Err(ExchangeError::Network("proxy closed during CONNECT".into()));
+        }
+        buf.push(byte[0]);
+        if buf.ends_with(b"\r\n\r\n") {
+            break;
+        }
+        if buf.len() > 16 * 1024 {
+            return Err(ExchangeError::Network(
+                "proxy CONNECT response too large".into(),
+            ));
+        }
+    }
+    let head = String::from_utf8_lossy(&buf);
+    let status_ok = head
+        .lines()
+        .next()
+        .map(|l| l.contains(" 200 "))
+        .unwrap_or(false);
+    if !status_ok {
+        return Err(ExchangeError::Network(format!(
+            "proxy CONNECT refused: {}",
+            head.lines().next().unwrap_or("")
+        )));
+    }
+    let (ws, _) = tokio_tungstenite::client_async_tls_with_config(url, tcp, None, None)
+        .await
+        .map_err(|e| ExchangeError::Network(format!("ws handshake via proxy {url}: {e}")))?;
     Ok(ws)
 }
 

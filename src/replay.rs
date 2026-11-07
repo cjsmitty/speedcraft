@@ -74,14 +74,25 @@ impl<W: Write> QuoteWriter<W> {
 pub fn read_quotes(path: &Path) -> Result<Vec<QuoteRecord>> {
     let f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut out = Vec::new();
+    let mut bad = 0usize;
     for (i, line) in BufReader::new(f).lines().enumerate() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
-        let r: QuoteRecord =
-            serde_json::from_str(&line).with_context(|| format!("quote line {}", i + 1))?;
-        out.push(r);
+        match serde_json::from_str::<QuoteRecord>(&line) {
+            Ok(r) => out.push(r),
+            Err(e) => {
+                // A recording that is still being written ends in a partial line.
+                bad += 1;
+                if bad <= 3 {
+                    tracing::warn!(line = i + 1, error = %e, "skipping unparseable quote line");
+                }
+            }
+        }
+    }
+    if bad > 0 {
+        tracing::warn!(skipped = bad, "unparseable quote lines skipped");
     }
     out.sort_by_key(|r| r.ts_ms);
     Ok(out)

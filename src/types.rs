@@ -141,6 +141,9 @@ impl Fees {
     pub fn taker_rate(&self) -> Decimal {
         self.taker_bps / Decimal::from(10_000)
     }
+    pub fn maker_rate(&self) -> Decimal {
+        self.maker_bps / Decimal::from(10_000)
+    }
 }
 
 /// Exchange-specific rounding and minimums for a market.
@@ -196,6 +199,8 @@ pub struct OrderRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OrderStatus {
+    /// Resting on the book (post-only maker orders only).
+    Open,
     Filled,
     PartiallyFilled,
     Cancelled,

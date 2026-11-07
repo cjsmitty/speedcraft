@@ -193,7 +193,8 @@ impl Coinbase {
             "FILLED" => OrderStatus::Filled,
             "CANCELLED" | "EXPIRED" | "CANCEL_QUEUED" => OrderStatus::Cancelled,
             "FAILED" => OrderStatus::Rejected,
-            "OPEN" | "PENDING" | "QUEUED" | "" => OrderStatus::Unknown,
+            "OPEN" => OrderStatus::Open,
+            "PENDING" | "QUEUED" | "" => OrderStatus::Unknown,
             other => return Err(ExchangeError::BadResponse(format!("order status {other}"))),
         };
         let filled = parse_dec(s("filled_size"))?;
@@ -234,7 +235,7 @@ impl Coinbase {
         let mut last = None;
         for i in 0..10u32 {
             let r = self.get_order_by_id(order_id).await?;
-            if r.status != OrderStatus::Unknown {
+            if r.status != OrderStatus::Unknown && r.status != OrderStatus::Open {
                 return Ok(r);
             }
             last = Some(r);
@@ -433,6 +434,96 @@ impl Exchange for Coinbase {
         )))
     }
 
+    async fn place_post_only(&self, req: &OrderRequest) -> Result<OrderResult, ExchangeError> {
+        let product = self.product(&req.pair)?;
+        let body = json!({
+            "client_order_id": req.client_id,
+            "product_id": product,
+            "side": match req.side { Side::Buy => "BUY", Side::Sell => "SELL" },
+            "order_configuration": {
+                "limit_limit_gtc": {
+                    "base_size": req.qty.normalize().to_string(),
+                    "limit_price": req.limit_price.normalize().to_string(),
+                    "post_only": true,
+                }
+            }
+        });
+        let v = self.post("/api/v3/brokerage/orders", &body).await?;
+        if !v.get("success").and_then(Value::as_bool).unwrap_or(false) {
+            let msg = v
+                .get("error_response")
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| v.to_string());
+            // A post-only order that would cross is a normal, non-fatal outcome.
+            if msg.contains("POST_ONLY") || msg.contains("post only") || msg.contains("would cross")
+            {
+                return Ok(OrderResult::nothing(&req.client_id, OrderStatus::Rejected));
+            }
+            return Err(ExchangeError::Rejected(msg));
+        }
+        let order_id = v
+            .get("success_response")
+            .and_then(|s| s.get("order_id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| ExchangeError::BadResponse(format!("no order_id in {v}")))?
+            .to_string();
+        self.order_ids
+            .lock()
+            .unwrap()
+            .insert(req.client_id.clone(), order_id.clone());
+        let mut r = self.get_order_by_id(&order_id).await?;
+        if r.status == OrderStatus::Unknown {
+            r.status = OrderStatus::Open;
+        }
+        r.client_id = req.client_id.clone();
+        r.exchange_order_id = Some(order_id);
+        Ok(r)
+    }
+
+    async fn cancel_order(
+        &self,
+        _pair: &Pair,
+        client_id: &str,
+        exchange_order_id: Option<&str>,
+    ) -> Result<(), ExchangeError> {
+        let id = exchange_order_id
+            .map(String::from)
+            .or_else(|| self.order_ids.lock().unwrap().get(client_id).cloned());
+        let Some(id) = id else {
+            return Err(ExchangeError::BadResponse(format!(
+                "no exchange order id for {client_id}"
+            )));
+        };
+        let v = self
+            .post(
+                "/api/v3/brokerage/orders/batch_cancel",
+                &json!({"order_ids": [id]}),
+            )
+            .await?;
+        let ok = v
+            .get("results")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|r| r.get("success"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if ok {
+            return Ok(());
+        }
+        // Already filled/cancelled counts as gone; the caller re-checks status.
+        let reason = v
+            .get("results")
+            .and_then(Value::as_array)
+            .and_then(|a| a.first())
+            .and_then(|r| r.get("failure_reason"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if reason.contains("NOT_FOUND") || reason.contains("ALREADY") || reason.contains("DONE") {
+            return Ok(());
+        }
+        Err(ExchangeError::BadResponse(format!("cancel failed: {v}")))
+    }
+
     async fn stream_top_of_book(
         &self,
         pairs: Vec<Pair>,
@@ -595,6 +686,8 @@ mod tests {
         let o = json!({"order_id":"x","status":"FILLED","filled_size":"1","average_filled_price":"100","total_fees":"0"});
         assert_eq!(cb.parse_order(&o).unwrap().status, OrderStatus::Filled);
         let o = json!({"order_id":"x","status":"OPEN","filled_size":"0","average_filled_price":"0","total_fees":"0"});
+        assert_eq!(cb.parse_order(&o).unwrap().status, OrderStatus::Open);
+        let o = json!({"order_id":"x","status":"PENDING","filled_size":"0","average_filled_price":"0","total_fees":"0"});
         assert_eq!(cb.parse_order(&o).unwrap().status, OrderStatus::Unknown);
     }
 }

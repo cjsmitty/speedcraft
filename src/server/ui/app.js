@@ -109,6 +109,16 @@
       }).join('');
   }
 
+  function renderMaker(st) {
+    const rows = (st.snapshot && st.snapshot.maker) || [];
+    const card = $('#maker-card');
+    if (!rows.length) { card.hidden = true; return; }
+    card.hidden = false;
+    const q = (x) => x ? `${fmtPx(x.price)} × ${fmt(x.qty, 4)} <small class="${cls(x.expected_edge_bps)}">(${signed(x.expected_edge_bps, 1)} bps)</small>` : '<span class="hint">none</span>';
+    $('#maker').innerHTML = `<tr><th>Pair</th><th>Quote on</th><th>Hedge on</th><th>Resting bid</th><th>Resting ask</th><th class="num">Inventory</th><th class="num">Fills</th><th class="num">PnL</th></tr>` +
+      rows.map((r) => `<tr><td>${esc(r.pair)}</td><td>${esc(r.quote_exchange)}</td><td>${esc(r.hedge_exchange)}</td><td>${q(r.bid)}</td><td>${q(r.ask)}</td><td class="num">${fmt(r.inventory_base, 4)}</td><td class="num">${r.fills}</td><td class="num ${cls(r.realised_pnl)}">${signed(r.realised_pnl, 4)}</td></tr>`).join('');
+  }
+
   function renderBooks(st) {
     const books = (st.snapshot && st.snapshot.books) || [];
     const t = $('#books');
@@ -139,6 +149,7 @@
       case 'rejected': return `${e.op.pair}: ${esc(e.reason)}`;
       case 'leg': return `${e.unwind ? 'UNWIND ' : ''}${e.side} ${e.requested_qty} ${e.pair} on ${e.exchange} @ limit ${fmtPx(e.limit_price)} → ${e.result.status} filled ${e.result.filled_qty} @ ${fmtPx(e.result.avg_price)} fee ${fmt(e.result.fee_quote, 4)}`;
       case 'halt': return esc(e.reason);
+      case 'quote': return `${e.action.toUpperCase()} ${e.side} ${e.qty} ${e.pair} on ${e.exchange} @ ${fmtPx(e.price)} (expected ${signed(e.expected_edge_bps, 1)} bps)`;
       case 'start': return `${e.mode} mode, v${e.version}`;
       default: return '';
     }
@@ -202,7 +213,7 @@
 
   function render() {
     const st = state.status; if (!st) return;
-    renderTabs(); renderBanners(st); renderControls(st); renderKpis(st); renderEdges(st); renderBooks(st); renderBalances(st); drawChart(st);
+    renderTabs(); renderBanners(st); renderControls(st); renderKpis(st); renderEdges(st); renderMaker(st); renderBooks(st); renderBalances(st); drawChart(st);
   }
 
   // ---------- polling ----------

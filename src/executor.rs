@@ -130,9 +130,9 @@ impl Executor {
         }
     }
 
-    /// Unwind `qty` of base on `ex` by crossing the book. Returns the result
-    /// and whether any quantity is still unmatched.
-    async fn unwind(
+    /// Cross the book on `ex` for `qty` of base (used to unwind a one-legged
+    /// arbitrage fill and to hedge a maker fill). Returns leftover quantity.
+    pub async fn hedge(
         &self,
         ex: ExchangeId,
         pair: &Pair,
@@ -248,7 +248,7 @@ impl Executor {
         let mut leftover = Decimal::ZERO;
         if excess_long > Decimal::ZERO {
             leftover += self
-                .unwind(
+                .hedge(
                     op.buy_exchange,
                     pair,
                     Side::Sell,
@@ -260,7 +260,7 @@ impl Executor {
         }
         if excess_short > Decimal::ZERO {
             leftover += self
-                .unwind(
+                .hedge(
                     op.sell_exchange,
                     pair,
                     Side::Buy,

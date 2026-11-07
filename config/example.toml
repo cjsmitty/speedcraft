@@ -64,6 +64,23 @@ coinbase = "ETH-USD"
 kraken = "ETH/USD"
 binance_us = "ETHUSD"
 
+# Maker mode (off by default). Rest post-only quotes on quote_exchange priced
+# off hedge_exchange's book; every fill is hedged at once with a taker order on
+# hedge_exchange. Earns the spread instead of paying it. Risk: adverse
+# selection (you get filled right before the market moves). Run `scan` on a
+# recording first: the "mkrP95" columns show whether this can clear your fees.
+[maker]
+enabled = false
+quote_exchange = "kraken"      # cheapest maker fee you have access to
+hedge_exchange = "coinbase"    # where fills are hedged (pays taker)
+target_edge_bps = 5            # required net edge after both fees
+quote_notional = 50            # size of each resting quote, quote currency
+max_inventory_notional = 300   # stop quoting one side beyond this net position
+requote_bps = 1                # re-post when the fair price moves this much
+max_improve_bps = 1            # join the best level or improve it by at most this
+fill_poll_ms = 500
+# pairs = ["ATOM/USD", "INJ/USD"]   # default: all pairs mapped on both venues
+
 [paper]
 start_quote = 10000
 start_base = 0.2
