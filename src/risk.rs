@@ -102,6 +102,14 @@ impl RiskManager {
         self.halted = Some(r);
     }
 
+    /// Clear a halt after a human has reviewed it.
+    pub fn resume(&mut self) {
+        if let Some(r) = self.halted.take() {
+            tracing::warn!(reason = %r, "halt cleared by operator");
+        }
+        self.consecutive_failures = 0;
+    }
+
     pub fn stop_file_present(&self) -> bool {
         self.stop_file.exists()
     }

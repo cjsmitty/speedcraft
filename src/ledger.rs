@@ -52,6 +52,9 @@ pub enum LedgerEvent {
         ts_ms: i64,
         reason: String,
     },
+    Resume {
+        ts_ms: i64,
+    },
     Stop {
         ts_ms: i64,
     },

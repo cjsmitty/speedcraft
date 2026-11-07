@@ -28,16 +28,48 @@ tier turns that into a loss, so the bot did nothing, which is the correct
 outcome. Run your own overnight `record` and `replay` before believing
 anything else.
 
-## Build (macOS)
+## The app
 
 ```sh
-# Rust via https://rustup.rs if you do not have it
+./install/make-mac-app.sh      # builds dist/Speedcraft.app (Rust via https://rustup.rs first)
+open dist/Speedcraft.app       # or double-click; right-click → Open the first time (unsigned)
+```
+
+The app opens a Terminal window with logs and the control panel in your
+browser at `http://127.0.0.1:7700`. From there you can start and stop the
+local engine in paper or live mode, halt and resume trading, toggle the STOP
+file, watch every cross-exchange edge against your fee tier in real time,
+see balances and the trade ledger, edit and validate the config, and manage
+any number of remote agents running on Linux VMs. Data lives in
+`~/Library/Application Support/Speedcraft`.
+
+Without the bundle, `speedcraft ui` from a directory with a `config.toml` does
+the same thing.
+
+### Remote agents on Linux VMs
+
+Install the same binary as a headless, token-protected systemd service:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/cjsmitty/speedcraft/main/install/install-agent.sh | bash
+```
+
+The installer prints the agent's token and URL. Add it in the app under
+"Remote agents" and switch to it with the tab at the top. The browser only
+ever talks to the app on your Mac; the app forwards each command to the
+agent with its token. Full details, SSH tunnel and Tailscale setups, and the
+HTTP API are in `docs/REMOTE.md`.
+
+## Build
+
+```sh
 cargo build --release
 ./target/release/speedcraft --help
 ```
 
 Pure-Rust TLS with the system keychain as trust store. No OpenSSL, no Homebrew
-dependencies. Apple Silicon and Intel both work with the same command.
+dependencies. Apple Silicon, Intel Macs and Linux all build with the same
+command.
 
 ## Run
 
@@ -48,6 +80,8 @@ cp config/example.toml config.toml   # edit fee floors, pairs, limits
 ./target/release/speedcraft record --out quotes.jsonl --seconds 28800   # overnight capture
 ./target/release/speedcraft replay quotes.jsonl                          # backtest it
 ./target/release/speedcraft report ledger.jsonl
+./target/release/speedcraft ui       # the control panel (see above)
+./target/release/speedcraft agent    # headless mode for servers (see docs/REMOTE.md)
 ```
 
 `paper` is the default subcommand. It prints a status line every 30 seconds
@@ -110,17 +144,27 @@ afford to lose on any exchange.
 cargo test
 ```
 
-51 tests: strategy math with exact decimal expectations, risk state machine,
+61 tests: strategy math with exact decimal expectations, risk state machine,
 paper exchange fills, two-leg executor including unwind, Kraken HMAC-SHA512
 against the official vector, Binance HMAC-SHA256 against the official vector,
-Coinbase ES256 JWT round-trip verification, config validation, and an
-end-to-end pipeline test (profitable cross, balance caps, stale quotes, retail
-fees, STOP file, one-legged unwind, daily loss halt).
+Coinbase ES256 JWT round-trip verification, config validation, the HTTP API
+(token enforcement, live-mode refusal, config validation, agent registry and
+proxy error handling), the engine supervisor, and an end-to-end pipeline test
+(profitable cross, balance caps, stale quotes, retail fees, STOP file,
+one-legged unwind, daily loss halt).
+
+The UI and the agent proxy were also exercised end to end against live
+Coinbase and Kraken data: a UI host and a separate token-protected agent
+process, agent registered through the API, status, halt, resume and stop
+driven through the proxy, and the page rendered in headless Chromium with no
+script errors.
 
 ## Layout
 
 ```
-src/main.rs            CLI: paper | live | check | record | replay | report
+src/main.rs            CLI: paper | live | check | record | replay | report | ui | agent
+src/server/            supervisor (start/stop/halt/resume), HTTP API, agent registry + proxy, web UI
+src/runtime.rs         exchange construction and engine lifecycle shared by CLI, UI and agent
 src/engine.rs          event loop: quotes -> strategy -> risk -> executor -> ledger
 src/strategy/arb.rs    pure opportunity math
 src/risk.rs            limits, kill switch, circuit breakers
@@ -128,6 +172,9 @@ src/executor.rs        concurrent IOC legs + unwind
 src/exchanges/         trait, paper, coinbase, kraken, binance
 src/ledger.rs          append-only JSONL audit log
 src/replay.rs          quote recording and backtest
+install/install-agent.sh   Linux: build + systemd service + token, one command
+install/make-mac-app.sh    macOS: builds dist/Speedcraft.app
 docs/PLAN.md           design, loss paths and their handling
 docs/RESEARCH.md       fee data, why arbitrage fails, sources
+docs/REMOTE.md         Mac app + Linux agents: topology, install, tunnels, API
 ```

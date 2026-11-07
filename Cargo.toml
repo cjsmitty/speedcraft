@@ -1,6 +1,6 @@
 [package]
 name = "speedcraft"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Cross-exchange crypto arbitrage bot with hard risk limits (paper mode by default)"
@@ -40,8 +40,12 @@ async-trait = "0.1"
 url = "2"
 dashmap = "6"
 hex = "0.4"
+axum = { version = "0.7", features = ["json", "tokio", "http1", "query"] }
+tower-http = { version = "0.6", features = ["trace"] }
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
 http = "1"
 tokio-test = "0.4"
 

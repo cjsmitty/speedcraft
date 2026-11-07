@@ -5,13 +5,16 @@ use rust_decimal_macros::dec;
 use speedcraft::book::BookCache;
 use speedcraft::config::{Config, Secrets, EXAMPLE_TOML};
 use speedcraft::engine::Engine;
-use speedcraft::exchanges::{
-    binance::Binance, coinbase::Coinbase, kraken::Kraken, paper::PaperExchange, Exchange,
-};
 use speedcraft::ledger::{read_ledger, Ledger, LedgerEvent};
 use speedcraft::replay::{read_quotes, QuoteWriter};
-use speedcraft::types::{ExchangeId, MarketRules, TopOfBook};
-use std::collections::HashMap;
+use speedcraft::runtime::{
+    build_engine, build_live_exchanges, build_paper_exchanges, check_live_gates, run_engine, Mode,
+};
+use speedcraft::server::agents::AgentRegistry;
+use speedcraft::server::api::generate_token;
+use speedcraft::server::{router, AppState, Supervisor};
+use speedcraft::types::TopOfBook;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
@@ -59,6 +62,37 @@ enum Cmd {
     },
     /// Print the example config.
     ExampleConfig,
+    /// Run the local desktop UI (opens in your browser). Controls the local engine and any remote agents.
+    Ui {
+        #[arg(long, default_value = "127.0.0.1:7700")]
+        listen: SocketAddr,
+        /// Do not open the browser automatically.
+        #[arg(long)]
+        no_open: bool,
+        /// Require this bearer token on the API (mandatory when not bound to localhost).
+        #[arg(long)]
+        token: Option<String>,
+        /// Start an engine immediately: paper or live.
+        #[arg(long)]
+        autostart: Option<String>,
+    },
+    /// Run as a headless agent on a server/VM, controlled from the UI over HTTP.
+    Agent {
+        #[arg(long, default_value = "127.0.0.1:7777")]
+        listen: SocketAddr,
+        /// Display name shown in the UI.
+        #[arg(long, default_value = "agent")]
+        name: String,
+        /// Bearer token. Takes precedence over --token-file.
+        #[arg(long)]
+        token: Option<String>,
+        /// File holding the token; created with a random token if missing. Relative to the config directory.
+        #[arg(long, default_value = "agent.token")]
+        token_file: PathBuf,
+        /// Start an engine immediately: paper or live.
+        #[arg(long)]
+        autostart: Option<String>,
+    },
 }
 
 fn init_logging() {
@@ -70,94 +104,6 @@ fn init_logging() {
         .init();
 }
 
-/// Build the real connectors (used directly in live mode, and as public data
-/// sources inside paper exchanges).
-fn build_live_exchanges(
-    cfg: &Config,
-    secrets: &Secrets,
-    require_keys: bool,
-) -> Result<HashMap<ExchangeId, Arc<dyn Exchange>>> {
-    let mut out: HashMap<ExchangeId, Arc<dyn Exchange>> = HashMap::new();
-    for id in cfg.enabled_exchanges() {
-        let markets = cfg.symbol_to_pair(id);
-        if require_keys && !secrets.has(id) {
-            bail!("live mode: missing API credentials for {id} (see README for the env var names)");
-        }
-        let ex: Arc<dyn Exchange> = match id {
-            ExchangeId::Coinbase => Arc::new(Coinbase::new(
-                secrets.coinbase_key_name.clone(),
-                secrets.coinbase_key_pem.clone(),
-                markets,
-            )?),
-            ExchangeId::Kraken => Arc::new(Kraken::new(
-                secrets.kraken_key.clone(),
-                secrets.kraken_secret.clone(),
-                markets,
-            )),
-            ExchangeId::Binance => Arc::new(Binance::new(
-                id,
-                secrets.binance_key.clone(),
-                secrets.binance_secret.clone(),
-                markets,
-            )),
-            ExchangeId::BinanceUs => Arc::new(Binance::new(
-                id,
-                secrets.binance_us_key.clone(),
-                secrets.binance_us_secret.clone(),
-                markets,
-            )),
-        };
-        out.insert(id, ex);
-    }
-    Ok(out)
-}
-
-fn default_rules() -> MarketRules {
-    MarketRules {
-        qty_step: dec!(0.00001),
-        price_tick: dec!(0.01),
-        min_qty: dec!(0.00001),
-        min_notional: dec!(1),
-    }
-}
-
-fn build_paper_exchanges(
-    cfg: &Config,
-    book: &Arc<BookCache>,
-    with_live_data: bool,
-    latency_override: Option<u64>,
-) -> Result<HashMap<ExchangeId, Arc<dyn Exchange>>> {
-    let inner = if with_live_data {
-        build_live_exchanges(cfg, &Secrets::default(), false)?
-    } else {
-        HashMap::new()
-    };
-    let pairs = cfg.pairs();
-    let mut out: HashMap<ExchangeId, Arc<dyn Exchange>> = HashMap::new();
-    let mut pcfg = cfg.paper.clone();
-    if let Some(l) = latency_override {
-        pcfg.sim_latency_ms = l;
-    }
-    for id in cfg.enabled_exchanges() {
-        let my_pairs: Vec<_> = pairs
-            .iter()
-            .filter(|p| cfg.market_symbol(id, p).is_some())
-            .cloned()
-            .collect();
-        let ex = PaperExchange::new(
-            id,
-            inner.get(&id).cloned(),
-            book.clone(),
-            cfg.fee_floor(id),
-            pcfg.clone(),
-            &my_pairs,
-            default_rules(),
-        );
-        out.insert(id, Arc::new(ex));
-    }
-    Ok(out)
-}
-
 fn shutdown_signal() -> watch::Receiver<bool> {
     let (tx, rx) = watch::channel(false);
     tokio::spawn(async move {
@@ -167,27 +113,100 @@ fn shutdown_signal() -> watch::Receiver<bool> {
     rx
 }
 
-async fn run_engine(
-    cfg: Config,
-    exchanges: HashMap<ExchangeId, Arc<dyn Exchange>>,
-    book: Arc<BookCache>,
-    mode: &str,
-) -> Result<()> {
-    let ledger = Ledger::open(&PathBuf::from(&cfg.ledger_path))?;
-    let mut engine = Engine::new(cfg, exchanges, book, ledger, mode);
-    engine
-        .preflight()
-        .await
-        .context("preflight failed; not starting")?;
-    tracing::info!("preflight ok: {}", engine.status_line());
-    let (tx, rx) = mpsc::channel::<TopOfBook>(4096);
-    let handles = engine.spawn_streams(tx);
+async fn run_cli_engine(cfg: Config, mode: Mode) -> Result<()> {
+    let engine = build_engine(cfg, mode)?;
     let shutdown = shutdown_signal();
-    engine.run(rx, shutdown).await?;
-    for h in handles {
-        h.abort();
+    run_engine(engine, shutdown, None, None).await
+}
+
+/// Resolve the agent token: explicit value, else a token file (created with
+/// a fresh random token if missing).
+fn resolve_token(
+    token: Option<String>,
+    token_file: Option<PathBuf>,
+    cfg_path: &std::path::Path,
+) -> Result<Option<String>> {
+    if let Some(t) = token.filter(|t| !t.trim().is_empty()) {
+        return Ok(Some(t.trim().to_string()));
     }
+    let Some(path) = token_file else {
+        return Ok(None);
+    };
+    let path = if path.is_absolute() {
+        path
+    } else {
+        cfg_path.parent().map(|d| d.join(&path)).unwrap_or(path)
+    };
+    if path.exists() {
+        let t = std::fs::read_to_string(&path)?.trim().to_string();
+        if t.is_empty() {
+            bail!("token file {} is empty", path.display());
+        }
+        return Ok(Some(t));
+    }
+    let t = generate_token();
+    std::fs::write(&path, format!("{t}\n"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    eprintln!(
+        "generated new agent token and saved it to {}",
+        path.display()
+    );
+    Ok(Some(t))
+}
+
+async fn serve(
+    state: AppState,
+    listen: SocketAddr,
+    open_browser: bool,
+    autostart: Option<String>,
+) -> Result<()> {
+    if let Some(mode) = autostart {
+        let m = Mode::parse(&mode)
+            .ok_or_else(|| anyhow::anyhow!("--autostart must be paper or live"))?;
+        // `--autostart live` on the command line is the explicit confirmation.
+        state
+            .sup
+            .start(m, Some(speedcraft::runtime::LIVE_CONFIRM_PHRASE))
+            .context("autostart failed")?;
+    }
+    let app = router(state.clone());
+    let listener = tokio::net::TcpListener::bind(listen)
+        .await
+        .with_context(|| format!("binding {listen}"))?;
+    let url = format!("http://{}", listener.local_addr()?);
+    tracing::info!("serving Speedcraft at {url}");
+    println!("Speedcraft is running at {url}");
+    if open_browser {
+        let _ = open_in_browser(&url);
+    }
+    let sup = state.sup.clone();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("shutting down: stopping engine first");
+            if sup.stop().is_ok() {
+                sup.wait_stopped(std::time::Duration::from_secs(15)).await;
+            }
+        })
+        .await?;
     Ok(())
+}
+
+fn open_in_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let cmd = ("open", vec![url]);
+    #[cfg(target_os = "linux")]
+    let cmd = ("xdg-open", vec![url]);
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let cmd = ("cmd", vec!["/C", "start", url]);
+    std::process::Command::new(cmd.0)
+        .args(cmd.1)
+        .spawn()
+        .map(|_| ())
 }
 
 #[tokio::main]
@@ -204,30 +223,61 @@ async fn main() -> Result<()> {
         Cmd::ExampleConfig => unreachable!(),
         Cmd::Paper => {
             tracing::warn!("PAPER MODE: live market data, simulated fills, no real orders");
-            let book = Arc::new(BookCache::new());
-            let exchanges = build_paper_exchanges(&cfg, &book, true, None)?;
-            run_engine(cfg, exchanges, book, "paper").await
+            run_cli_engine(cfg, Mode::Paper).await
         }
         Cmd::Live { live } => {
-            let env_ok = std::env::var("SPEEDCRAFT_I_ACCEPT_LOSSES")
-                .map(|v| v == "yes")
-                .unwrap_or(false);
-            if !(live && cfg.live && env_ok) {
-                bail!(
-                    "refusing to trade live. All three are required: --live flag ({live}), live = true in config ({}), SPEEDCRAFT_I_ACCEPT_LOSSES=yes ({env_ok}). \
-                     Run `paper` and `replay` first; see docs/PLAN.md.",
-                    cfg.live
-                );
-            }
+            check_live_gates(&cfg, live)?;
             tracing::error!(
-                "LIVE MODE: real orders will be sent. Max daily loss {} {}",
-                cfg.risk.max_daily_loss_quote,
-                "quote"
+                "LIVE MODE: real orders will be sent. Max daily loss {} quote",
+                cfg.risk.max_daily_loss_quote
             );
-            let secrets = Secrets::from_env();
-            let exchanges = build_live_exchanges(&cfg, &secrets, true)?;
-            let book = Arc::new(BookCache::new());
-            run_engine(cfg, exchanges, book, "live").await
+            run_cli_engine(cfg, Mode::Live).await
+        }
+        Cmd::Ui {
+            listen,
+            no_open,
+            token,
+            autostart,
+        } => {
+            if !listen.ip().is_loopback()
+                && token
+                    .as_deref()
+                    .map(|t| t.trim().is_empty())
+                    .unwrap_or(true)
+            {
+                bail!("binding the UI to {listen} (not localhost) requires --token");
+            }
+            let cfg_path = std::fs::canonicalize(&cli.config)?;
+            let registry = AgentRegistry::open(&cfg_path.with_file_name("agents.json"))?;
+            let sup = Supervisor::new("local", cfg_path);
+            let state = AppState {
+                sup,
+                agents: Some(Arc::new(registry)),
+                token: token.filter(|t| !t.trim().is_empty()),
+                http: speedcraft::exchanges::http_client(),
+            };
+            serve(state, listen, !no_open, autostart).await
+        }
+        Cmd::Agent {
+            listen,
+            name,
+            token,
+            token_file,
+            autostart,
+        } => {
+            let cfg_path = std::fs::canonicalize(&cli.config)?;
+            let token = resolve_token(token, Some(token_file), &cfg_path)?;
+            if !listen.ip().is_loopback() && token.is_none() {
+                bail!("binding the agent to {listen} (not localhost) requires a token");
+            }
+            let sup = Supervisor::new(name, cfg_path);
+            let state = AppState {
+                sup,
+                agents: None,
+                token,
+                http: speedcraft::exchanges::http_client(),
+            };
+            serve(state, listen, false, autostart).await
         }
         Cmd::Check => {
             let secrets = Secrets::from_env();

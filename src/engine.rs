@@ -10,10 +10,134 @@ use crate::strategy::{find_best_opportunity, Balances, StrategyParams};
 use crate::types::{now_ms, ExchangeId, Fees, MarketRules, Pair, TopOfBook};
 use anyhow::{bail, Context, Result};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+/// Operator commands delivered to a running engine.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum Control {
+    Halt { reason: String },
+    Resume,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BookView {
+    pub exchange: ExchangeId,
+    pub pair: String,
+    pub bid: Decimal,
+    pub bid_qty: Decimal,
+    pub ask: Decimal,
+    pub ask_qty: Decimal,
+    pub age_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EdgeView {
+    pub pair: String,
+    pub buy_exchange: ExchangeId,
+    pub sell_exchange: ExchangeId,
+    pub gross_bps: Decimal,
+    pub net_bps: Decimal,
+    /// Both quotes are within the trading freshness window.
+    pub fresh: bool,
+    /// Fresh and net edge at or above the configured minimum.
+    pub tradable: bool,
+}
+
+/// Everything a UI needs, published by the engine about once a second.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct StatusSnapshot {
+    pub mode: String,
+    pub started_ms: i64,
+    pub updated_ms: i64,
+    pub quotes_seen: u64,
+    pub quotes_per_sec: f64,
+    pub opportunities: u32,
+    pub trades: u32,
+    pub successes: u32,
+    pub realised_pnl: Decimal,
+    pub pnl_today: Decimal,
+    pub trades_today: u32,
+    pub consecutive_failures: u32,
+    pub halted: Option<String>,
+    pub stop_file_present: bool,
+    pub disabled_exchanges: Vec<ExchangeId>,
+    pub books: Vec<BookView>,
+    pub edges: Vec<EdgeView>,
+    pub best_net_edge: HashMap<String, Decimal>,
+    pub balances: HashMap<ExchangeId, HashMap<String, Decimal>>,
+    pub fees_taker_bps: HashMap<ExchangeId, Decimal>,
+    pub min_edge_bps: Decimal,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StampedEvent {
+    pub seq: u64,
+    pub ts_ms: i64,
+    #[serde(flatten)]
+    pub event: LedgerEvent,
+}
+
+/// Fixed-size ring of recent ledger events with monotonically increasing
+/// sequence numbers, so a UI can poll for "everything after N".
+pub struct EventRing {
+    buf: std::collections::VecDeque<StampedEvent>,
+    cap: usize,
+    next_seq: u64,
+}
+
+impl EventRing {
+    pub fn new(cap: usize) -> Self {
+        EventRing {
+            buf: std::collections::VecDeque::with_capacity(cap),
+            cap,
+            next_seq: 1,
+        }
+    }
+    pub fn push(&mut self, event: LedgerEvent) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        if self.buf.len() == self.cap {
+            self.buf.pop_front();
+        }
+        self.buf.push_back(StampedEvent {
+            seq,
+            ts_ms: now_ms(),
+            event,
+        });
+        seq
+    }
+    pub fn since(&self, seq: u64, limit: usize) -> Vec<StampedEvent> {
+        self.buf
+            .iter()
+            .filter(|e| e.seq > seq)
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+    pub fn latest_seq(&self) -> u64 {
+        self.next_seq - 1
+    }
+}
+
+/// State shared between a running engine and whatever supervises it.
+pub struct Shared {
+    pub status: RwLock<StatusSnapshot>,
+    pub events: Mutex<EventRing>,
+}
+
+impl Shared {
+    pub fn new() -> Arc<Shared> {
+        Arc::new(Shared {
+            status: RwLock::new(StatusSnapshot::default()),
+            events: Mutex::new(EventRing::new(5000)),
+        })
+    }
+}
 
 pub struct Engine {
     pub cfg: Config,
@@ -31,6 +155,11 @@ pub struct Engine {
     pub best_net_edge: HashMap<Pair, Decimal>,
     pub quotes_seen: u64,
     pub mode: String,
+    pub shared: Option<Arc<Shared>>,
+    pub control_rx: Option<mpsc::Receiver<Control>>,
+    started_ms: i64,
+    last_publish: Instant,
+    quotes_at_last_publish: u64,
 }
 
 impl Engine {
@@ -63,7 +192,136 @@ impl Engine {
             best_net_edge: HashMap::new(),
             quotes_seen: 0,
             mode: mode.to_string(),
+            shared: None,
+            control_rx: None,
+            started_ms: now_ms(),
+            last_publish: Instant::now(),
+            quotes_at_last_publish: 0,
         }
+    }
+
+    /// Attach shared state and a control channel for a supervising UI/agent.
+    pub fn attach(&mut self, shared: Arc<Shared>, control_rx: mpsc::Receiver<Control>) {
+        self.shared = Some(shared);
+        self.control_rx = Some(control_rx);
+    }
+
+    /// Write a ledger event to disk and to the shared event ring.
+    pub fn emit(&mut self, ev: LedgerEvent) {
+        self.ledger.write(&ev);
+        if let Some(sh) = &self.shared {
+            sh.events.lock().unwrap().push(ev);
+        }
+    }
+
+    pub fn snapshot(&self) -> StatusSnapshot {
+        let risk = self.risk.snapshot();
+        let max_age = Duration::from_millis(self.cfg.strategy.max_quote_age_ms);
+        let mut books = Vec::new();
+        let mut edges = Vec::new();
+        for pair in self.cfg.pairs() {
+            let fresh = self.book.snapshot(&pair, Duration::from_secs(3600));
+            for b in &fresh {
+                books.push(BookView {
+                    exchange: b.exchange,
+                    pair: pair.to_string(),
+                    bid: b.bid,
+                    bid_qty: b.bid_qty,
+                    ask: b.ask,
+                    ask_qty: b.ask_qty,
+                    age_ms: b.received_at.elapsed().as_millis() as u64,
+                });
+            }
+            // Display edges over a generous window; trade only on fresh ones.
+            let shown: Vec<&TopOfBook> = fresh
+                .iter()
+                .filter(|b| b.received_at.elapsed() <= Duration::from_secs(15))
+                .collect();
+            for b in &shown {
+                for sl in &shown {
+                    if b.exchange == sl.exchange {
+                        continue;
+                    }
+                    let (Some(bf), Some(sf)) =
+                        (self.fees.get(&b.exchange), self.fees.get(&sl.exchange))
+                    else {
+                        continue;
+                    };
+                    let gross = (sl.bid - b.ask) / b.ask * Decimal::from(10_000);
+                    let net = gross - bf.taker_bps - sf.taker_bps - self.params.slippage_buffer_bps;
+                    let is_fresh =
+                        b.received_at.elapsed() <= max_age && sl.received_at.elapsed() <= max_age;
+                    edges.push(EdgeView {
+                        pair: pair.to_string(),
+                        buy_exchange: b.exchange,
+                        sell_exchange: sl.exchange,
+                        gross_bps: gross.round_dp(2),
+                        net_bps: net.round_dp(2),
+                        fresh: is_fresh,
+                        tradable: is_fresh && net >= self.params.min_edge_bps,
+                    });
+                }
+            }
+        }
+        books.sort_by_key(|b| (b.pair.clone(), b.exchange));
+        edges.sort_by_key(|e| std::cmp::Reverse(e.net_bps));
+        let elapsed = self.last_publish.elapsed().as_secs_f64().max(0.001);
+        StatusSnapshot {
+            mode: self.mode.clone(),
+            started_ms: self.started_ms,
+            updated_ms: now_ms(),
+            quotes_seen: self.quotes_seen,
+            quotes_per_sec: ((self.quotes_seen - self.quotes_at_last_publish) as f64 / elapsed
+                * 10.0)
+                .round()
+                / 10.0,
+            opportunities: self.ledger.opportunities,
+            trades: self.ledger.trades,
+            successes: self.ledger.successes,
+            realised_pnl: self.ledger.realised_pnl,
+            pnl_today: risk.realised_pnl_today,
+            trades_today: risk.trades_today,
+            consecutive_failures: risk.consecutive_failures,
+            halted: risk.halted,
+            stop_file_present: self.risk.stop_file_present(),
+            disabled_exchanges: risk.disabled_exchanges,
+            books,
+            edges,
+            best_net_edge: self
+                .best_net_edge
+                .iter()
+                .map(|(p, e)| (p.to_string(), e.round_dp(2)))
+                .collect(),
+            balances: self.per_pair_balances.clone(),
+            fees_taker_bps: self.fees.iter().map(|(e, f)| (*e, f.taker_bps)).collect(),
+            min_edge_bps: self.params.min_edge_bps,
+        }
+    }
+
+    fn publish(&mut self) {
+        let snap = self.snapshot();
+        self.last_publish = Instant::now();
+        self.quotes_at_last_publish = self.quotes_seen;
+        if let Some(sh) = &self.shared {
+            *sh.status.write().unwrap() = snap;
+        }
+    }
+
+    fn apply_control(&mut self, c: Control) {
+        match c {
+            Control::Halt { reason } => {
+                self.risk.halt(reason.clone());
+                self.emit(LedgerEvent::Halt {
+                    ts_ms: now_ms(),
+                    reason: format!("operator: {reason}"),
+                });
+            }
+            Control::Resume => {
+                self.risk.resume();
+                self.emit(LedgerEvent::Resume { ts_ms: now_ms() });
+            }
+        }
+        self.publish();
     }
 
     /// Fetch fees, rules and balances from every exchange. Refuses to run if
@@ -98,7 +356,7 @@ impl Engine {
             }
         }
         self.refresh_balances(None).await?;
-        self.ledger.write(&LedgerEvent::Start {
+        self.emit(LedgerEvent::Start {
             ts_ms: now_ms(),
             mode: self.mode.clone(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -169,13 +427,13 @@ impl Engine {
         else {
             return false;
         };
-        self.ledger.write(&LedgerEvent::Opportunity {
+        self.emit(LedgerEvent::Opportunity {
             ts_ms: now_ms(),
             op: op.clone(),
         });
         if let Err(reason) = self.risk.check(&op) {
             tracing::info!(%reason, pair = %pair, "opportunity rejected by risk");
-            self.ledger.write(&LedgerEvent::Rejected {
+            self.emit(LedgerEvent::Rejected {
                 ts_ms: now_ms(),
                 op,
                 reason: reason.to_string(),
@@ -194,8 +452,8 @@ impl Engine {
             book: self.book.clone(),
         };
         let out = executor.execute(&op).await;
-        for leg in &out.legs {
-            self.ledger.write(leg);
+        for leg in out.legs.clone() {
+            self.emit(leg);
         }
         for ex in &out.exchange_errors {
             self.risk.record_exchange_error(*ex);
@@ -204,7 +462,7 @@ impl Engine {
             self.risk.record_exchange_ok(op.buy_exchange);
             self.risk.record_exchange_ok(op.sell_exchange);
         }
-        self.ledger.write(&LedgerEvent::Trade {
+        self.emit(LedgerEvent::Trade {
             ts_ms: now_ms(),
             pair: pair.clone(),
             buy_exchange: op.buy_exchange,
@@ -222,7 +480,7 @@ impl Engine {
             .record_outcome(pair, out.realised_pnl, out.success);
         if let Some(h) = out.halt {
             self.risk.halt(h.clone());
-            self.ledger.write(&LedgerEvent::Halt {
+            self.emit(LedgerEvent::Halt {
                 ts_ms: now_ms(),
                 reason: h,
             });
@@ -323,13 +581,26 @@ impl Engine {
     ) -> Result<()> {
         let mut status = tokio::time::interval(Duration::from_secs(30));
         status.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut publish = tokio::time::interval(Duration::from_secs(1));
+        publish.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_balance_refresh = Instant::now();
+        let mut control_rx = self.control_rx.take();
+        self.publish();
         loop {
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => {
                     tracing::info!("shutdown requested");
                     break;
+                }
+                c = async { match control_rx.as_mut() { Some(rx) => rx.recv().await, None => std::future::pending().await } } => {
+                    match c {
+                        Some(c) => self.apply_control(c),
+                        None => control_rx = None,
+                    }
+                }
+                _ = publish.tick() => {
+                    self.publish();
                 }
                 _ = status.tick() => {
                     tracing::info!("{}", self.status_line());
@@ -350,7 +621,8 @@ impl Engine {
                 }
             }
         }
-        self.ledger.write(&LedgerEvent::Stop { ts_ms: now_ms() });
+        self.emit(LedgerEvent::Stop { ts_ms: now_ms() });
+        self.publish();
         tracing::info!("{}", self.status_line());
         Ok(())
     }
