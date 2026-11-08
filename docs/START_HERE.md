@@ -56,7 +56,11 @@ cd speedcraft
 open dist/Speedcraft.app
 ```
 
-Either way a window opens in your browser. Everything else happens there.
+Either way the control panel opens in your browser at http://127.0.0.1:7700.
+The app itself has no window and no Dock icon; it runs quietly in the
+background. Everything happens in the browser tab. Use the **Quit** button
+at the top right to stop it. If the panel does not appear, the log is at
+`~/Library/Logs/Speedcraft/speedcraft.log`.
 
 **Day 1, any time:** press **Start watching**. Leave it on. This is safe:
 real prices, pretend money, no orders.

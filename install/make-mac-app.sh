@@ -25,12 +25,24 @@ cp "$BIN" "$APP/Contents/Resources/speedcraft"
 chmod +x "$APP/Contents/Resources/speedcraft"
 cp config/example.toml "$APP/Contents/Resources/config/example.toml"
 cat > "$APP/Contents/MacOS/Speedcraft" <<'LAUNCH'
-#!/usr/bin/env bash
-# Launcher: runs the UI with its data in ~/Library/Application Support/Speedcraft
-set -e
+#!/bin/bash
+# Speedcraft launcher. Runs the control panel server directly (no Terminal,
+# no AppleScript: macOS blocks downloaded apps from driving Terminal, which
+# made the app bounce once and vanish). Logs go to ~/Library/Logs/Speedcraft.
+set -u
 HERE="$(cd "$(dirname "$0")/../Resources" && pwd)"
+APP_ROOT="$(cd "$HERE/../.." && pwd)"
 DATA="$HOME/Library/Application Support/Speedcraft"
-mkdir -p "$DATA"
+LOGS="$HOME/Library/Logs/Speedcraft"
+mkdir -p "$DATA" "$LOGS"
+LOG="$LOGS/speedcraft.log"
+URL="http://127.0.0.1:7700"
+
+# Downloaded bundles carry a quarantine flag that can stop the nested binary
+# from running. Clearing it on our own files is safe and best-effort.
+xattr -dr com.apple.quarantine "$APP_ROOT" 2>/dev/null || true
+chmod +x "$HERE/speedcraft" 2>/dev/null || true
+
 [ -f "$DATA/config.toml" ] || cp "$HERE/config/example.toml" "$DATA/config.toml"
 [ -f "$DATA/env" ] || cat > "$DATA/env" <<'ENV'
 # Exchange API keys for LIVE mode on this Mac. Paper mode needs nothing here.
@@ -42,14 +54,32 @@ mkdir -p "$DATA"
 #KRAKEN_API_SECRET=
 ENV
 chmod 600 "$DATA/env"
-# Open a Terminal window so logs are visible and Ctrl-C stops everything.
-SCRIPT="cd \"$DATA\" && set -a && . \"$DATA/env\" && set +a && export RUST_LOG=\${RUST_LOG:-info} && \"$HERE/speedcraft\" --config \"$DATA/config.toml\" ui"
-osascript <<OSA
-tell application "Terminal"
-  activate
-  do script "$SCRIPT"
-end tell
-OSA
+
+dialog() { osascript -e "display dialog \"$1\" with title \"Speedcraft\" buttons {\"OK\"} default button 1 with icon caution" >/dev/null 2>&1 || true; }
+
+# Already running? Just bring up the panel.
+if curl -s -m 2 -o /dev/null "$URL/healthz"; then
+  open "$URL"
+  exit 0
+fi
+
+cd "$DATA" || exit 1
+set -a; . "$DATA/env"; set +a
+export RUST_LOG="${RUST_LOG:-info}"
+{
+  echo "=== Speedcraft launched $(date) ==="
+  echo "config: $DATA/config.toml"
+} >> "$LOG"
+
+# Run the server as this app's process. It opens the browser itself once
+# the port is bound. Quit from the panel's "Quit" button.
+"$HERE/speedcraft" --config "$DATA/config.toml" ui >> "$LOG" 2>&1
+STATUS=$?
+if [ $STATUS -ne 0 ]; then
+  TAIL=$(tail -n 5 "$LOG" | sed 's/"/\\"/g' | tr '\n' ' ')
+  dialog "Speedcraft could not start (exit $STATUS). Last log lines: $TAIL  Full log: $LOG"
+fi
+exit $STATUS
 LAUNCH
 chmod +x "$APP/Contents/MacOS/Speedcraft"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
@@ -63,8 +93,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleShortVersionString</key><string>__VERSION__</string>
   <key>CFBundleExecutable</key><string>Speedcraft</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>LSUIElement</key><true/>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
 </dict></plist>
 PLIST
 sed -i '' "s/__VERSION__/$VERSION/g" "$APP/Contents/Info.plist"
@@ -72,5 +103,7 @@ echo "==> signing"
 codesign --force --deep --sign "${SIGN_IDENTITY:--}" ${SIGN_IDENTITY:+--options runtime --timestamp} "$APP"
 codesign --verify --deep --strict "$APP" && echo "signature ok (${SIGN_IDENTITY:-ad-hoc})"
 echo "==> built $APP (v$VERSION)"
-echo "Move it to /Applications if you like. First launch: right-click → Open (unsigned app)."
+echo "Move it to /Applications if you like. First launch: right-click → Open (not notarized)."
+echo "The app runs in the background with no Dock icon; the panel opens in your browser at http://127.0.0.1:7700."
+echo "Quit from the panel's Quit button. Logs: ~/Library/Logs/Speedcraft/speedcraft.log"
 echo "Data lives in ~/Library/Application Support/Speedcraft (config.toml, env, ledger.jsonl, agents.json)."

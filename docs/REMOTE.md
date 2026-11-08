@@ -76,10 +76,11 @@ The live dialog shows which gates are satisfied before you type.
 ./install/make-mac-app.sh     # produces dist/Speedcraft.app
 ```
 
-Double-click it. A Terminal window opens with the logs and the UI opens in
-your default browser at `http://127.0.0.1:7700`. Data (config, env, ledger,
-agents) lives in `~/Library/Application Support/Speedcraft`. Ctrl-C in the
-Terminal window stops the local engine cleanly and quits.
+Double-click it. It runs in the background and the UI opens in your default
+browser at `http://127.0.0.1:7700`. Data (config, env, ledger, agents) lives
+in `~/Library/Application Support/Speedcraft`; logs in
+`~/Library/Logs/Speedcraft`. The panel's Quit button stops the local engine
+cleanly and exits.
 
 Without the bundle: `speedcraft ui` does the same thing from any directory
 holding a `config.toml`.
@@ -98,6 +99,7 @@ All under `/api`, JSON, `Authorization: Bearer <token>` when a token is set.
 | POST | `/engine/resume` | clear a halt |
 | POST | `/stopfile` | `{"present":true}` create/remove the STOP file |
 | GET / PUT | `/config` | read / validate-and-write `config.toml` |
+| POST | `/quit` | UI host only: stop the engine and exit the process |
 | POST | `/record` | `{"on":true}` start saving every quote the running engine sees to `quotes-<date>.jsonl`; `{"on":false}` stop |
 | POST | `/scan` | `{"file":"..."}` optional; ranks the newest recording at your fee floors plus volume and zero tiers |
 | GET / POST / DELETE | `/agents`, `/agents/{id}` | UI host only: remote agent registry |

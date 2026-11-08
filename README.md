@@ -77,8 +77,9 @@ To cut a release: `git tag v0.3.0 && git push origin v0.3.0`.
 open dist/Speedcraft.app       # right-click → Open the first time (ad-hoc signed)
 ```
 
-The app opens a Terminal window with logs and the control panel in your
-browser at `http://127.0.0.1:7700`. From there you can start and stop the
+The app runs in the background (no window, no Dock icon) and opens the
+control panel in your browser at `http://127.0.0.1:7700`; quit it from the
+panel's Quit button. Logs go to `~/Library/Logs/Speedcraft/speedcraft.log`. From there you can start and stop the
 local engine in paper or live mode, halt and resume trading, toggle the STOP
 file, watch every cross-exchange edge against your fee tier in real time,
 see balances and the trade ledger, edit and validate the config, and manage
