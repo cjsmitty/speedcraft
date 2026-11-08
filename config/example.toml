@@ -47,22 +47,153 @@ enabled = false
 taker_fee_bps = 2
 maker_fee_bps = 0
 
-# Canonical pairs and their exchange-native symbols. Be careful: USD and USDT
-# are different assets. Only map a pair across exchanges where the quote asset
-# is genuinely the same, or you are trading the USDT/USD basis, not arbitrage.
+# Coins to watch and their exchange-native symbols. The panel's "Coins" card
+# edits this section for you. Be careful if you add your own: USD and USDT
+# are different assets, so only map a pair across exchanges whose quote
+# asset is genuinely the same.
 [[pairs]]
 pair = "BTC/USD"
 [pairs.markets]
 coinbase = "BTC-USD"
 kraken = "BTC/USD"
-binance_us = "BTCUSD"
 
 [[pairs]]
 pair = "ETH/USD"
 [pairs.markets]
 coinbase = "ETH-USD"
 kraken = "ETH/USD"
-binance_us = "ETHUSD"
+
+[[pairs]]
+pair = "XRP/USD"
+[pairs.markets]
+coinbase = "XRP-USD"
+kraken = "XRP/USD"
+
+[[pairs]]
+pair = "SOL/USD"
+[pairs.markets]
+coinbase = "SOL-USD"
+kraken = "SOL/USD"
+
+[[pairs]]
+pair = "DOGE/USD"
+[pairs.markets]
+coinbase = "DOGE-USD"
+kraken = "DOGE/USD"
+
+[[pairs]]
+pair = "ADA/USD"
+[pairs.markets]
+coinbase = "ADA-USD"
+kraken = "ADA/USD"
+
+[[pairs]]
+pair = "LINK/USD"
+[pairs.markets]
+coinbase = "LINK-USD"
+kraken = "LINK/USD"
+
+[[pairs]]
+pair = "AVAX/USD"
+[pairs.markets]
+coinbase = "AVAX-USD"
+kraken = "AVAX/USD"
+
+[[pairs]]
+pair = "LTC/USD"
+[pairs.markets]
+coinbase = "LTC-USD"
+kraken = "LTC/USD"
+
+[[pairs]]
+pair = "BCH/USD"
+[pairs.markets]
+coinbase = "BCH-USD"
+kraken = "BCH/USD"
+
+[[pairs]]
+pair = "DOT/USD"
+[pairs.markets]
+coinbase = "DOT-USD"
+kraken = "DOT/USD"
+
+[[pairs]]
+pair = "XLM/USD"
+[pairs.markets]
+coinbase = "XLM-USD"
+kraken = "XLM/USD"
+
+[[pairs]]
+pair = "UNI/USD"
+[pairs.markets]
+coinbase = "UNI-USD"
+kraken = "UNI/USD"
+
+[[pairs]]
+pair = "NEAR/USD"
+[pairs.markets]
+coinbase = "NEAR-USD"
+kraken = "NEAR/USD"
+
+[[pairs]]
+pair = "SUI/USD"
+[pairs.markets]
+coinbase = "SUI-USD"
+kraken = "SUI/USD"
+
+[[pairs]]
+pair = "HBAR/USD"
+[pairs.markets]
+coinbase = "HBAR-USD"
+kraken = "HBAR/USD"
+
+[[pairs]]
+pair = "AAVE/USD"
+[pairs.markets]
+coinbase = "AAVE-USD"
+kraken = "AAVE/USD"
+
+[[pairs]]
+pair = "ATOM/USD"
+[pairs.markets]
+coinbase = "ATOM-USD"
+kraken = "ATOM/USD"
+
+[[pairs]]
+pair = "OP/USD"
+[pairs.markets]
+coinbase = "OP-USD"
+kraken = "OP/USD"
+
+[[pairs]]
+pair = "PEPE/USD"
+[pairs.markets]
+coinbase = "PEPE-USD"
+kraken = "PEPE/USD"
+
+[[pairs]]
+pair = "SHIB/USD"
+[pairs.markets]
+coinbase = "SHIB-USD"
+kraken = "SHIB/USD"
+
+[[pairs]]
+pair = "INJ/USD"
+[pairs.markets]
+coinbase = "INJ-USD"
+kraken = "INJ/USD"
+
+[[pairs]]
+pair = "ONDO/USD"
+[pairs.markets]
+coinbase = "ONDO-USD"
+kraken = "ONDO/USD"
+
+[[pairs]]
+pair = "ARB/USD"
+[pairs.markets]
+coinbase = "ARB-USD"
+kraken = "ARB/USD"
 
 # Maker mode (off by default). Rest post-only quotes on quote_exchange priced
 # off hedge_exchange's book; every fill is hedged at once with a taker order on

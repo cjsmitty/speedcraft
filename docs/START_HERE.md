@@ -76,8 +76,28 @@ done. Leave it in paper mode as long as you like; it costs nothing. Check
 the ranking again if your fee tier drops or you add an exchange.
 
 **If a coin shows "yes":** run paper mode for a full week and watch the
-"Can this make money?" panel. If it stays positive, read the live-trading
-section in the README, fund both exchanges, and go live with small limits.
+"Can this make money?" panel. If it stays positive: in Settings, paste API
+keys for both exchanges and test them, put dollars and coins on both
+exchanges, switch on the two live-trading switches, then press "Start live
+trading" and type the phrase. Keep the daily loss limit small.
+
+## Settings (everything is in the app)
+
+The ⚙ Settings button at the top right has six tabs:
+
+- **Exchanges & keys**: switch each exchange on or off, enter your fee
+  level, paste API keys, and press "Test connection" to prove they work.
+  Keys are saved in a file only your user can read, next to the config.
+  Create keys with trade permission and **without** withdrawal permission.
+- **Trading rules**: the smallest gap worth trading, max size per trade.
+- **Safety limits**: daily loss limit, how many failures before it halts.
+- **Maker mode**: standing offers (read the ranking first).
+- **Pretend money**: how much the practice account starts with.
+- **Live trading**: the two switches that, with the typed phrase, allow real
+  trading.
+
+The **Coins being watched** card on the main screen lets you tick which
+coins to follow. Saving either one restarts the engine for you.
 
 ## Reading the screen
 

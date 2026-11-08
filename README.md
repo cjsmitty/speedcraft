@@ -142,7 +142,10 @@ Only after `replay` on an overnight recording shows positive expected value at
 1. Fund both exchanges: quote currency (USD) **and** base (BTC, ETH) on each.
    The bot never transfers between exchanges; it only trades what is already there.
 2. Create API keys with trade permission and **no withdrawal permission**.
-3. Export credentials (never put them in the config file):
+3. Enter credentials in the app: ⚙ Settings → Exchanges & keys, then "Test
+   connection". They are saved to `secrets.toml` (mode 0600) next to the
+   config. For headless agents you can instead export environment variables,
+   which take precedence:
 
    | Exchange | Variables |
    |---|---|
@@ -151,8 +154,10 @@ Only after `replay` on an overnight recording shows positive expected value at
    | Binance | `BINANCE_API_KEY`, `BINANCE_API_SECRET` |
    | Binance.US | `BINANCE_US_API_KEY`, `BINANCE_US_API_SECRET` |
 
-4. Set `live = true` in `config.toml`, export `SPEEDCRAFT_I_ACCEPT_LOSSES=yes`,
-   and run `speedcraft live --live`. All three are required; any one alone refuses.
+4. Switch on both toggles under Settings → Live trading (or set `live = true`
+   in `config.toml` and `accept_losses = true` in `secrets.toml`, or export
+   `SPEEDCRAFT_I_ACCEPT_LOSSES=yes`), then press "Start live trading" and type
+   the phrase (CLI: `speedcraft live --live`). All three are required.
 5. Start with `max_notional_quote` and `max_daily_loss_quote` tiny.
 6. `touch STOP` pauses trading within one loop iteration. Ctrl-C shuts down cleanly.
 
@@ -175,7 +180,7 @@ real fee tier, balances and market rules and prints them without trading.
 | A dead exchange is isolated | Per-exchange circuit breaker after `max_consecutive_errors` |
 | Stale data is never acted on | Quotes older than `max_quote_age_ms` are discarded |
 | Fees cannot be under-estimated | Uses the higher of the fetched tier and your configured floor |
-| Cannot go live by accident | Flag + config + environment variable, all three |
+| Cannot go live by accident | Typed phrase + settings switch + loss acknowledgement, all three |
 
 ## What it does not protect against
 

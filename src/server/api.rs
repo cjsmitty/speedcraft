@@ -48,6 +48,9 @@ pub fn router(state: AppState) -> Router {
         .route("/config", get(config_get).put(config_put))
         .route("/record", post(record_toggle))
         .route("/quit", post(quit))
+        .route("/coins", get(coins_get).put(coins_put))
+        .route("/settings", get(settings_get).put(settings_put))
+        .route("/exchanges/:id/test", post(exchange_test))
         .route("/scan", post(scan_run))
         .route("/agents", get(agents_list).post(agents_add))
         .route("/agents/:id", axum::routing::delete(agents_remove))
@@ -210,6 +213,75 @@ async fn config_put(State(st): State<AppState>, Json(req): Json<ConfigPut>) -> A
     let running = st.sup.state() != super::supervisor::EngineState::Stopped;
     Ok(Json(
         json!({"ok": true, "restart_required": running, "summary": st.sup.config_summary()}),
+    ))
+}
+
+fn cfg_dir(st: &AppState) -> std::path::PathBuf {
+    st.sup
+        .cfg_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+async fn settings_get(State(st): State<AppState>) -> ApiResult {
+    let cfg = st.sup.load_config()?;
+    let secrets = super::settings::secrets_view(&cfg_dir(&st))?;
+    Ok(Json(
+        json!({"config": serde_json::to_value(&cfg).unwrap_or(Value::Null), "secrets": secrets, "path": st.sup.cfg_path.display().to_string()}),
+    ))
+}
+
+#[derive(Deserialize)]
+struct SettingsPut {
+    #[serde(default)]
+    config: Option<Value>,
+    #[serde(default)]
+    secrets: Option<super::settings::SecretsPatch>,
+}
+
+async fn settings_put(State(st): State<AppState>, Json(req): Json<SettingsPut>) -> ApiResult {
+    if let Some(patch) = &req.config {
+        let text = st.sup.read_config_text()?;
+        let new_text = super::settings::apply_patch(&text, patch)?;
+        st.sup.write_config_text(&new_text)?;
+    }
+    if let Some(sp) = &req.secrets {
+        super::settings::apply_secrets(&cfg_dir(&st), sp)?;
+    }
+    let cfg = st.sup.load_config()?;
+    let secrets = super::settings::secrets_view(&cfg_dir(&st))?;
+    let running = st.sup.state() != super::supervisor::EngineState::Stopped;
+    Ok(Json(
+        json!({"ok": true, "restart_required": running && req.config.is_some(), "config": serde_json::to_value(&cfg).unwrap_or(Value::Null), "secrets": secrets, "summary": st.sup.config_summary()}),
+    ))
+}
+
+async fn exchange_test(State(st): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    let ex: crate::types::ExchangeId = id
+        .parse()
+        .map_err(|e: String| ApiError(StatusCode::BAD_REQUEST, e))?;
+    let cfg = st.sup.load_config()?;
+    let r = super::settings::test_exchange(&cfg, ex).await;
+    Ok(Json(serde_json::to_value(r).unwrap_or(Value::Null)))
+}
+
+async fn coins_get(State(st): State<AppState>) -> ApiResult {
+    Ok(Json(
+        serde_json::to_value(st.sup.coins()?).unwrap_or(Value::Null),
+    ))
+}
+
+#[derive(Deserialize)]
+struct CoinsPut {
+    bases: Vec<String>,
+}
+
+async fn coins_put(State(st): State<AppState>, Json(req): Json<CoinsPut>) -> ApiResult {
+    let v = st.sup.set_coins(&req.bases)?;
+    let running = st.sup.state() != super::supervisor::EngineState::Stopped;
+    Ok(Json(
+        json!({"ok": true, "restart_required": running, "coins": serde_json::to_value(v).unwrap_or(Value::Null)}),
     ))
 }
 
@@ -608,6 +680,76 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         assert_eq!(v["ok"], true);
         assert!(rx.try_recv().is_ok(), "quit signal delivered");
+    }
+
+    #[tokio::test]
+    async fn coins_endpoints_rewrite_the_config() {
+        let (st, _d) = state(None, true);
+        let app = router(st);
+        let (s, v) = call(app.clone(), "GET", "/api/coins", None, None).await;
+        assert_eq!(s, StatusCode::OK);
+        assert!(v["catalog"].as_array().unwrap().len() >= 24);
+        assert!(v["selected"].as_array().unwrap().iter().any(|b| b == "BTC"));
+        let (s, v) = call(
+            app.clone(),
+            "PUT",
+            "/api/coins",
+            None,
+            Some(json!({"bases": ["SOL", "XRP"]})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["coins"]["selected"], json!(["SOL", "XRP"]));
+        assert_eq!(v["restart_required"], false);
+        let (_, v) = call(app.clone(), "GET", "/api/status", None, None).await;
+        assert_eq!(v["config"]["pairs"], json!(["SOL/USD", "XRP/USD"]));
+        let (s, _) = call(app, "PUT", "/api/coins", None, Some(json!({"bases": []}))).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn settings_endpoints_patch_config_and_secrets() {
+        let (st, _d) = state(None, true);
+        let app = router(st);
+        let (s, v) = call(app.clone(), "GET", "/api/settings", None, None).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["config"]["live"], false);
+        assert_eq!(v["secrets"]["accept_losses"], false);
+        let (s, v) = call(app.clone(), "PUT", "/api/settings", None, Some(json!({"config": {"strategy": {"min_edge_bps": "9"}}, "secrets": {"kraken_key": "ABCDEFGHIJKL", "kraken_secret": "c2VjcmV0", "accept_losses": true}}))).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["config"]["strategy"]["min_edge_bps"], "9");
+        assert_eq!(v["secrets"]["kraken_secret_set"], true);
+        assert_eq!(v["secrets"]["accept_losses"], true);
+        assert_eq!(
+            v["summary"]["live_env_set"], true,
+            "acknowledgement counts as the second live gate"
+        );
+        let (s, v) = call(
+            app.clone(),
+            "PUT",
+            "/api/settings",
+            None,
+            Some(json!({"config": {"strategy": {"depth_fraction": "7"}}})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("depth_fraction"));
+        let (s, v) = call(
+            app.clone(),
+            "POST",
+            "/api/exchanges/coinbase/test",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["ok"], false);
+        assert!(v["message"]
+            .as_str()
+            .unwrap()
+            .contains("no API credentials"));
+        let (s, _) = call(app, "POST", "/api/exchanges/mtgox/test", None, None).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

@@ -23,6 +23,11 @@ pub fn live_env_set() -> bool {
     std::env::var(LIVE_ENV).map(|v| v == "yes").unwrap_or(false)
 }
 
+/// The operator has acknowledged losses, via the environment or the secrets file.
+pub fn losses_accepted(cfg: &Config) -> bool {
+    Secrets::load(cfg.dir.as_deref()).accept_losses
+}
+
 /// Build the real connectors (used directly in live mode, and as public data
 /// sources inside paper exchanges).
 pub fn build_live_exchanges(
@@ -136,10 +141,10 @@ impl Mode {
 /// The three independent live-mode gates. `cli_flag` is `--live` for the CLI
 /// or the typed confirmation phrase for the UI.
 pub fn check_live_gates(cfg: &Config, cli_flag: bool) -> Result<()> {
-    let env_ok = live_env_set();
-    if !(cli_flag && cfg.live && env_ok) {
+    let accepted = losses_accepted(cfg);
+    if !(cli_flag && cfg.live && accepted) {
         bail!(
-            "refusing to trade live. All three are required: explicit confirmation ({cli_flag}), live = true in config ({}), {LIVE_ENV}=yes in the process environment ({env_ok}). Run paper and replay first; see docs/PLAN.md.",
+            "refusing to trade live. All three are required: explicit confirmation ({cli_flag}), live = true in config ({}), the loss acknowledgement in Settings or {LIVE_ENV}=yes ({accepted}). Run paper first; see docs/START_HERE.md.",
             cfg.live
         );
     }
@@ -151,7 +156,7 @@ pub fn build_engine(cfg: Config, mode: Mode) -> Result<Engine> {
     let book = Arc::new(BookCache::new());
     let exchanges = match mode {
         Mode::Paper => build_paper_exchanges(&cfg, &book, true, None)?,
-        Mode::Live => build_live_exchanges(&cfg, &Secrets::from_env(), true)?,
+        Mode::Live => build_live_exchanges(&cfg, &Secrets::load(cfg.dir.as_deref()), true)?,
     };
     let ledger = Ledger::open(&PathBuf::from(&cfg.ledger_path))?;
     Ok(Engine::new(cfg, exchanges, book, ledger, mode.as_str()))

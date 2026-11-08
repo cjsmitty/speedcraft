@@ -8,6 +8,7 @@
 //! losing trade and that its worst case is bounded by the limits you set.
 
 pub mod book;
+pub mod coins;
 pub mod config;
 pub mod engine;
 pub mod exchanges;

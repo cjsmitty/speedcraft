@@ -1794,7 +1794,7 @@ dependencies = [
 
 [[package]]
 name = "speedcraft"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1821,6 +1821,7 @@ dependencies = [
  "tokio-test",
  "tokio-tungstenite",
  "toml",
+ "toml_edit 0.22.27",
  "tower",
  "tower-http",
  "tracing",
