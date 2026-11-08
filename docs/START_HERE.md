@@ -81,6 +81,32 @@ keys for both exchanges and test them, put dollars and coins on both
 exchanges, switch on the two live-trading switches, then press "Start live
 trading" and type the phrase. Keep the daily loss limit small.
 
+## The other way to earn: locked-in carry
+
+Below the steps there is a card called **Locked-in carry**. It watches
+Coinbase Derivatives futures on BTC, ETH, SOL and XRP. A dated future
+usually trades a little above the spot price. If you buy the coin and sell
+the future at the same time and hold until the future expires, that
+difference is yours no matter which way the price goes, because the two
+positions cancel each other. The card shows, for each contract:
+
+- the premium right now,
+- what that is per year before and after your fees,
+- the dollars locked in on your position size, and
+- the margin you would have to park with the exchange.
+
+It also opens pretend positions when a contract clears the minimum you set,
+and tracks them to expiry so you can see the idea working (or not) with no
+money at risk. In the first measurement (Nov 2026) the December Bitcoin
+contract paid about 6% a year before fees; at a 0.6% retail spot fee that fell
+to about 1.4%, below the 3% bar. The spot fee is the problem again, and it is
+the same fee tier question as everywhere else in this app.
+
+This version does not place futures orders. Doing it for real needs a
+Coinbase account with futures enabled and the cash for margin. If the card
+shows "worth it" at your fees for a while, tell me and the order path is the
+next build.
+
 ## Settings (everything is in the app)
 
 The ⚙ Settings button at the top right has six tabs:

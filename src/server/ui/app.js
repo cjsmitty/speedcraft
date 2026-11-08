@@ -129,7 +129,9 @@
     let text;
     if (f.trades === 0) {
       const short = f.best ? ` The closest moment was ${f.best[0]}, which was ${Math.abs(f.best[1]).toFixed(0)} bps short of paying: trading $10,000 then would have lost about ${per10k(Math.abs(f.best[1]))} after fees.` : '';
-      text = `No. In ${dur(f.uptimeS)} no price gap has beaten the fees, so projected earnings are $0.${short} To change this you need lower fees (a higher volume tier, or a cheaper exchange), not a faster bot.`;
+      const cq = ((st.snapshot && st.snapshot.carry && st.snapshot.carry.quotes) || []).filter((q) => !q.perpetual_style).sort((a, b) => b.net_annualized_pct - a.net_annualized_pct)[0];
+      const carry = cq ? ` Separately, the futures carry card shows ${cq.underlying} ${cq.display} would lock ${cq.net_annualized_pct.toFixed(1)}% a year after fees${cq.tradable ? '.' : ', which is not worth it at your fee level.'}` : '';
+      text = `Arbitrage: no. In ${dur(f.uptimeS)} no price gap has beaten the fees, so projected earnings from it are $0.${short}${carry}`;
       v.className = 'card verdict bad';
     } else if (f.pnl > 0) {
       text = `So far yes: ${usd(f.pnl)} in ${dur(f.uptimeS)}. At that pace about ${usd(f.perDay)} a day. ${f.mode === 'paper' ? 'This is pretend money; expect real results to be lower because real orders do not always fill.' : ''} Judge it over at least a week, not a day.`;
@@ -204,6 +206,24 @@
         const tag = e.tradable ? '<span class="tag ok">WOULD TRADE</span>' : !e.fresh ? '<span class="tag dim">old price</span>' : n >= minEdge ? '<span class="tag warn">just under</span>' : `<span class="tag no">${fmt(minEdge - n, 0)} bps short</span>`;
         return `<tr><td><b>${esc(e.pair.split('/')[0])}</b></td><td>${exName(e.buy_exchange)}</td><td>${exName(e.sell_exchange)}</td><td class="num">${fmt(e.gross_bps, 1)} bps</td><td class="num ${cls(n)}">${fmt(n, 1)} bps</td><td class="${cls(n)}"><span class="bar ${e.tradable ? 'ok' : ''}" style="width:${Math.round(w * 1.1)}px"></span> ${per10k(n)}</td><td>${tag}</td></tr>`;
       }).join('');
+  }
+
+  function renderCarry(st) {
+    const c = (st.snapshot && st.snapshot.carry) || {}; const card = $('#carry-card');
+    const quotes = c.quotes || []; const positions = c.positions || [];
+    if (!quotes.length && !c.last_error) { card.hidden = true; return; }
+    card.hidden = false;
+    $('#carry-sub').textContent = c.updated_ms ? `updated ${ago(Date.now() - c.updated_ms)} ago · ${st.config.exchanges.includes('coinbase') ? 'Coinbase spot + Coinbase Derivatives' : ''}` : '';
+    const best = quotes.filter((q) => !q.perpetual_style).sort((a, b) => b.net_annualized_pct - a.net_annualized_pct)[0];
+    $('#carry-lead').textContent = c.last_error ? `Problem: ${c.last_error}` : best
+      ? (best.tradable
+        ? `Best right now: ${best.underlying} ${best.display} locks ${usd(best.locked_profit)} on ${usd(best.spot_notional, 0)} of spot over ${best.days_to_expiry} days, ${best.net_annualized_pct.toFixed(2)}% a year after fees, with ${usd(best.margin_required, 0)} parked as margin.`
+        : `Best right now: ${best.underlying} ${best.display} at ${best.net_annualized_pct.toFixed(2)}% a year after your fees (${best.gross_annualized_pct.toFixed(2)}% before). Below your ${st.config && settingsData && settingsData.config ? settingsData.config.carry.min_annualized_pct : 3}% minimum, so no position. The spot fee is what eats it.`)
+      : 'No dated contracts found for the configured coins.';
+    $('#carry-table').innerHTML = `<tr><th>Contract</th><th class="num">Days left</th><th class="num">Spot</th><th class="num">Future bid</th><th class="num">Premium</th><th class="num">Before fees / yr</th><th class="num">After fees / yr</th><th class="num">Locked $</th><th class="num">Margin</th><th>Verdict</th></tr>` +
+      quotes.map((q) => `<tr><td><b>${esc(q.underlying)}</b> <small>${esc(q.display)}</small></td><td class="num">${q.perpetual_style ? '∞' : q.days_to_expiry}</td><td class="num">${fmtPx(q.spot_ask)}</td><td class="num">${fmtPx(q.future_bid)}</td><td class="num ${cls(q.basis_bps)}">${fmt(q.basis_bps, 1)} bps</td><td class="num">${q.perpetual_style ? '<small>funding n/a</small>' : fmt(q.gross_annualized_pct, 2) + '%'}</td><td class="num ${cls(q.net_annualized_pct)}">${q.perpetual_style ? '—' : fmt(q.net_annualized_pct, 2) + '%'}</td><td class="num ${cls(q.locked_profit)}">${q.perpetual_style ? '—' : usd(q.locked_profit)}</td><td class="num">${usd(q.margin_required, 0)}</td><td>${q.perpetual_style ? '<span class="tag dim">basis only</span>' : q.tradable ? '<span class="tag ok">WORTH IT</span>' : N(q.locked_profit) > 0 ? '<span class="tag warn">thin</span>' : '<span class="tag no">loses</span>'}</td></tr>`).join('');
+    $('#carry-positions').innerHTML = positions.length ? `<h2 style="margin-top:14px">Pretend positions</h2><table class="tbl"><tr><th>Contract</th><th class="num">Opened</th><th class="num">Spot entry</th><th class="num">Future entry</th><th class="num">Locked at expiry</th><th class="num">Mark now</th><th class="num">Margin</th><th>Status</th></tr>` +
+      positions.map((p) => `<tr><td><b>${esc(p.underlying)}</b> <small>${esc(p.product_id)}</small></td><td class="num">${new Date(p.opened_ms).toLocaleDateString()}</td><td class="num">${fmtPx(p.spot_entry)}</td><td class="num">${fmtPx(p.future_entry)}</td><td class="num ${cls(p.locked_profit)}">${usd(p.locked_profit)}</td><td class="num ${cls(p.mark_pnl)}">${usd(p.mark_pnl)}</td><td class="num">${usd(p.margin_required, 0)}</td><td>${p.settled ? '<span class="tag ok">settled</span>' : '<span class="tag warn">open, settles ' + new Date(p.expiry_ms).toLocaleDateString() + '</span>'}</td></tr>`).join('') + '</table>' : '';
   }
 
   function renderMaker(st) {
@@ -294,7 +314,7 @@
 
   function render() {
     const st = state.status; if (!st) return;
-    renderTabs(); renderBanners(st); renderHero(st); renderVerdict(st); renderSteps(st); renderEdges(st); renderMaker(st); renderBooks(st); renderBalances(st); drawChart(st);
+    renderTabs(); renderBanners(st); renderHero(st); renderVerdict(st); renderSteps(st); renderEdges(st); renderCarry(st); renderMaker(st); renderBooks(st); renderBalances(st); drawChart(st);
   }
 
   // ---------- polling ----------
@@ -435,6 +455,15 @@
       ['sim_slippage_bps', 'Simulated slippage (bps)', 'number', 'Makes pretend fills a little worse than quoted, like real ones.'],
       ['sim_latency_ms', 'Simulated order delay (ms)', 'number', ''],
     ],
+    carry: [
+      ['enabled', 'Watch futures carry', 'checkbox', 'Measure the premium of Coinbase Derivatives futures over spot and keep pretend positions.'],
+      ['notional', 'Spot dollars per position ($)', 'number', 'Nano contracts are 0.01 BTC or 0.1 ETH; the position rounds down to whole contracts.'],
+      ['min_annualized_pct', 'Worth it above (% per year, after fees)', 'number', ''],
+      ['futures_fee_per_contract', 'Futures fee per contract ($)', 'number', 'Coinbase Derivatives charges per nano contract per side; check your schedule.'],
+      ['initial_margin_pct', 'Margin for the short future (% of notional)', 'number', 'Cash you must park with the exchange; check your account\'s margin table.'],
+      ['poll_secs', 'Refresh every (seconds)', 'number', ''],
+      ['paper_positions', 'Open pretend positions automatically', 'checkbox', ''],
+    ],
     maker: [
       ['enabled', 'Maker mode on', 'checkbox', 'Leave standing offers on the quote exchange, hedge fills on the other.'],
       ['quote_exchange', 'Exchange for standing offers', 'exchange', 'Use the one with the lowest maker fee.'],
@@ -480,6 +509,7 @@
     for (const sect of ['strategy', 'risk', 'paper']) {
       $(`#tab-${sect}`).innerHTML = FIELDS[sect].map((f) => fieldHtml(sect, f, (c[sect] || {})[f[0]], exs)).join('');
     }
+    $('#tab-carry').innerHTML = FIELDS.carry.map((f) => fieldHtml('carry', f, (c.carry || {})[f[0]], exs)).join('') + `<p class="hint">Coins watched for carry: ${esc(((c.carry || {}).underlyings || []).join(', '))} (edit in the settings file under [carry] underlyings). Only Coinbase Derivatives is supported.</p>`;
     const m = Object.assign({}, MAKER_DEFAULTS, c.maker || {});
     $('#tab-maker').innerHTML = FIELDS.maker.map((f) => fieldHtml('maker', f, m[f[0]], exs)).join('') + `<p class="hint">Run "Rank the coins" first: the ranking shows whether standing offers can clear your fees. In the Nov 2026 test, offers on Binance.US got zero fills in 25 minutes.</p>`;
     $('#tab-live').innerHTML =

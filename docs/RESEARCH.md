@@ -157,3 +157,26 @@ run with the native WebSocket feed instead of 1 Hz polling, since fills
 happen inside the second. Run this overnight on the Mac before drawing a
 final conclusion, with the same config (`config/alts3.toml`, `[maker]`
 enabled, `quote_exchange = "binance_us"`).
+
+## Futures basis carry on Coinbase Derivatives (2026-11-08)
+
+Public data: `GET /api/v3/brokerage/market/products?product_type=FUTURE`
+lists 100 CDE contracts (venue FCM). Nano BTC contracts are 0.01 BTC; ETH
+0.1 ETH. The 2089-expiry series (e.g. `BIP-20DEC30-CDE`, display "BTC PERP")
+is the perpetual-style product; its `perpetual_details.funding_rate` is
+empty on the public endpoint. Dated contracts and perp-style contracts both
+stream on the public ticker WebSocket and the `market/product_book` REST
+endpoint.
+
+Observed at 04:21 UTC: spot BTC-USD ask 75,815.72; BIT-27NOV26 bid 76,095
+(+37 bps, 19.5 days, ~6.9%/yr gross); BIT-24DEC26 bid 76,415 (+79 bps, 46.5
+days, ~6.2%/yr gross); BIP perp-style bid 75,820 (+0.6 bps).
+
+After a 0.6% retail spot taker fee and $0.10 per nano contract, the December
+contract nets about 1.4%/yr on the spot notional, and 1.0%/yr on spot plus
+35% margin. At a 0.1% spot fee it nets about 5.5%/yr. As with arbitrage, the
+spot fee tier decides whether the trade is worth doing.
+
+Fee and margin figures for Coinbase Derivatives were not found on an
+official 2026 page; the 2022 LMX filing lists $0.07 to $0.10 per nano
+contract per side. Both are settings in the app so you can enter your own.

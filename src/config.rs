@@ -29,6 +29,8 @@ pub struct Config {
     pub paper: PaperConfig,
     #[serde(default)]
     pub maker: Option<MakerConfig>,
+    #[serde(default)]
+    pub carry: CarryConfig,
     /// Directory the config was loaded from (secrets.toml, recordings, STOP live here).
     #[serde(skip)]
     pub dir: Option<std::path::PathBuf>,
@@ -166,6 +168,68 @@ impl Default for PaperConfig {
             sim_slippage_bps: dec!(1),
             sim_latency_ms: 50,
             sim_miss_probability: 0.0,
+        }
+    }
+}
+
+/// Futures basis carry monitor (Coinbase Derivatives). Measurement only in
+/// this version: it shows the locked-in return of buying spot and selling the
+/// dated future, net of your fees, and keeps paper positions.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CarryConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Spot notional per position in quote currency.
+    #[serde(default = "default_carry_notional")]
+    pub notional: Decimal,
+    /// Minimum net annualized return to count as tradable, percent.
+    #[serde(default = "default_carry_min")]
+    pub min_annualized_pct: Decimal,
+    /// Exchange fee per futures contract per side (Coinbase Derivatives nano contracts ~ $0.10).
+    #[serde(default = "default_carry_fee")]
+    pub futures_fee_per_contract: Decimal,
+    /// Initial margin for the short future as percent of notional (check your account's table).
+    #[serde(default = "default_carry_margin")]
+    pub initial_margin_pct: Decimal,
+    #[serde(default = "default_carry_underlyings")]
+    pub underlyings: Vec<String>,
+    #[serde(default = "default_carry_poll")]
+    pub poll_secs: u64,
+    /// Open paper positions automatically when a contract clears the minimum.
+    #[serde(default = "default_true")]
+    pub paper_positions: bool,
+}
+
+fn default_carry_notional() -> Decimal {
+    dec!(1000)
+}
+fn default_carry_min() -> Decimal {
+    dec!(3)
+}
+fn default_carry_fee() -> Decimal {
+    dec!(0.10)
+}
+fn default_carry_margin() -> Decimal {
+    dec!(35)
+}
+fn default_carry_underlyings() -> Vec<String> {
+    vec!["BTC".into(), "ETH".into(), "SOL".into(), "XRP".into()]
+}
+fn default_carry_poll() -> u64 {
+    15
+}
+
+impl Default for CarryConfig {
+    fn default() -> Self {
+        CarryConfig {
+            enabled: true,
+            notional: default_carry_notional(),
+            min_annualized_pct: default_carry_min(),
+            futures_fee_per_contract: default_carry_fee(),
+            initial_margin_pct: default_carry_margin(),
+            underlyings: default_carry_underlyings(),
+            poll_secs: default_carry_poll(),
+            paper_positions: true,
         }
     }
 }
@@ -366,6 +430,12 @@ impl Config {
         }
         if self.paper.sim_miss_probability < 0.0 || self.paper.sim_miss_probability > 1.0 {
             bail!("paper.sim_miss_probability must be in 0..=1");
+        }
+        if self.carry.notional <= Decimal::ZERO
+            || self.carry.initial_margin_pct < Decimal::ZERO
+            || self.carry.initial_margin_pct > dec!(100)
+        {
+            bail!("carry.notional must be > 0 and carry.initial_margin_pct in 0..=100");
         }
         if let Some(m) = &self.maker {
             if m.enabled {

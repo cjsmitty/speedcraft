@@ -75,6 +75,9 @@ pub struct StatusSnapshot {
     /// Maker-mode resting quotes and inventory per pair (empty when disabled).
     #[serde(default)]
     pub maker: Vec<crate::maker::MakerView>,
+    /// Futures basis carry quotes and paper positions.
+    #[serde(default)]
+    pub carry: crate::carry::CarryState,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -216,6 +219,7 @@ pub struct Engine {
     pub shared: Option<Arc<Shared>>,
     pub control_rx: Option<mpsc::Receiver<Control>>,
     pub maker: Option<crate::maker::MakerManager>,
+    pub carry: Option<crate::carry::SharedCarry>,
     started_ms: i64,
     last_publish: Instant,
     quotes_at_last_publish: u64,
@@ -277,6 +281,7 @@ impl Engine {
             shared: None,
             control_rx: None,
             maker,
+            carry: None,
             started_ms: now_ms(),
             last_publish: Instant::now(),
             quotes_at_last_publish: 0,
@@ -384,6 +389,11 @@ impl Engine {
             fees_taker_bps: self.fees.iter().map(|(e, f)| (*e, f.taker_bps)).collect(),
             min_edge_bps: self.params.min_edge_bps,
             maker: self.maker.as_ref().map(|m| m.views()).unwrap_or_default(),
+            carry: self
+                .carry
+                .as_ref()
+                .map(|c| c.lock().unwrap().clone())
+                .unwrap_or_default(),
         }
     }
 

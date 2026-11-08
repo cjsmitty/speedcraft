@@ -41,6 +41,16 @@ taken while building this (Nov 2026, ~20 minutes each; full tables in
 `config/alts.toml` (Coinbase + Kraken) and `config/alts3.toml` (plus
 Binance.US) map the 24-coin basket. Kraken's XBT/XDG legacy names are handled.
 
+## Futures carry (Coinbase Derivatives)
+
+The carry card measures cash-and-carry on Coinbase's dated futures: buy
+spot, sell the future, hold to expiry, pocket the premium. Public data only;
+it discovers the CDE contracts (nano BTC, ETH, SOL, XRP and more), polls
+their books, computes the locked return net of your spot fee and the
+per-contract futures fee, estimates margin, and keeps paper positions.
+Perpetual-style contracts (2089 expiry) show basis only since their funding
+rate is not public. No futures orders are placed in this version.
+
 ## Maker mode
 
 Taker-taker arbitrage pays two taker fees. Maker mode rests **post-only**

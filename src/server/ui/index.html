@@ -66,6 +66,14 @@
     </div>
   </section>
 
+  <section class="card" id="carry-card" hidden>
+    <div class="card-head"><h2>Locked-in carry: futures premium over spot</h2><span class="hint" id="carry-sub"></span></div>
+    <p class="lead" id="carry-lead"></p>
+    <table class="tbl" id="carry-table"></table>
+    <div id="carry-positions"></div>
+    <p class="hint">How it works: buy the coin on Coinbase, sell the dated future on Coinbase Derivatives, hold to expiry. The future's premium is locked the day you enter; price moves cancel out. You must post margin for the short future (cash parked, not spent). This version measures and keeps pretend positions; it does not place futures orders. Perpetual-style contracts show their basis only, because the public feed does not publish their funding rate.</p>
+  </section>
+
   <section class="card" id="research" hidden>
     <div class="card-head"><h2>Which coins came closest</h2><span class="hint" id="research-sub"></span></div>
     <p class="lead" id="research-lead"></p>
@@ -158,6 +166,7 @@
       <button data-tab="risk">Safety limits</button>
       <button data-tab="maker">Maker mode</button>
       <button data-tab="paper">Pretend money</button>
+      <button data-tab="carry">Futures carry</button>
       <button data-tab="live">Live trading</button>
     </nav>
     <form id="settings-form">
@@ -166,6 +175,7 @@
       <div class="tab" data-tab="risk" id="tab-risk" hidden></div>
       <div class="tab" data-tab="maker" id="tab-maker" hidden></div>
       <div class="tab" data-tab="paper" id="tab-paper" hidden></div>
+      <div class="tab" data-tab="carry" id="tab-carry" hidden></div>
       <div class="tab" data-tab="live" id="tab-live" hidden></div>
     </form>
     <div class="row">
