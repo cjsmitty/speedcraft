@@ -5,6 +5,7 @@
 
 pub mod agents;
 pub mod api;
+pub mod settings;
 pub mod supervisor;
 
 pub use api::{router, AppState};

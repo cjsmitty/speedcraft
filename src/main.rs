@@ -300,7 +300,7 @@ async fn main() -> Result<()> {
             serve(state, listen, false, autostart, false).await
         }
         Cmd::Check => {
-            let secrets = Secrets::from_env();
+            let secrets = Secrets::load(cfg.dir.as_deref());
             let mut problems = 0;
             for id in cfg.enabled_exchanges() {
                 if secrets.has(id) {

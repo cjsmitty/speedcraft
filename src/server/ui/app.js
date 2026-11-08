@@ -326,7 +326,7 @@
   function updateQuitButton() { $('#btn-quit').hidden = !(state.isHost && state.agent === 'local'); }
   function switchAgent(id) {
     state.agent = id; state.lastSeq = 0; state.events = []; state.edgeHistory = {}; state.status = null; state.scan = null; updateQuitButton();
-    renderEvents(); renderResearch(); renderTabs(); pollStatus(); pollEvents(); loadConfig();
+    renderEvents(); renderResearch(); renderTabs(); pollStatus(); pollEvents(); loadConfig(); loadCoins();
   }
 
   // ---------- actions ----------
@@ -340,7 +340,7 @@
   $('#btn-live').onclick = () => {
     const st = state.status; if (!st) return;
     $('#live-agent-name').textContent = st.agent;
-    const gates = [[st.config.live_in_config, 'live = true in the settings file'], [st.config.live_env_set, 'SPEEDCRAFT_I_ACCEPT_LOSSES=yes set where the bot runs (and exchange API keys)'], [true, 'The phrase typed below']];
+    const gates = [[st.config.live_in_config, 'Settings → Live trading → "Allow live trading" is on'], [st.config.live_env_set, 'Settings → Live trading → "I understand this can lose real money" is ticked'], [true, 'The phrase typed below']];
     $('#live-gates').innerHTML = gates.map(([ok, t]) => `<li class="${ok ? 'ok' : 'no'}">${ok ? '✓' : '✗'} ${t}</li>`).join('');
     $('#live-phrase').value = ''; $('#live-go').disabled = true; $('#modal-live').hidden = false; $('#live-phrase').focus();
   };
@@ -368,7 +368,168 @@
   window.addEventListener('beforeunload', (e) => { if (state.configDirty) { e.preventDefault(); e.returnValue = ''; } });
   window.addEventListener('resize', () => state.status && drawChart(state.status));
 
+  // ---------- coins ----------
+  let coinsData = null;
+  async function loadCoins() {
+    try { coinsData = await api('/coins'); renderCoins(); } catch (e) { $('#coins-sub').textContent = e.message; }
+  }
+  function renderCoins() {
+    if (!coinsData) return;
+    const sel = new Set(coinsData.selected);
+    const exs = coinsData.exchanges;
+    $('#coins-sub').textContent = `${sel.size} of ${coinsData.catalog.length} coins · on ${exs.map(exName).join(', ')}`;
+    $('#coin-grid').innerHTML = coinsData.catalog.map((c) => {
+      const listed = c.markets.filter(([e]) => exs.includes(e)).map(([e]) => e);
+      const ok = listed.length >= 2;
+      return `<label class="coin ${sel.has(c.base) ? 'on' : ''}" title="${ok ? 'listed on ' + listed.map(exName).join(', ') : 'needs two enabled exchanges'}"><input type="checkbox" value="${esc(c.base)}" ${sel.has(c.base) ? 'checked' : ''} ${ok ? '' : 'disabled'}><span><b>${esc(c.base)}</b> <small>${esc(c.name)}</small></span></label>`;
+    }).join('');
+    $('#coin-grid').querySelectorAll('input').forEach((i) => i.onchange = () => i.closest('.coin').classList.toggle('on', i.checked));
+  }
+  $('#coins-all').onclick = () => $('#coin-grid').querySelectorAll('input:not(:disabled)').forEach((i) => { i.checked = true; i.closest('.coin').classList.add('on'); });
+  $('#coins-none').onclick = () => $('#coin-grid').querySelectorAll('input').forEach((i) => { i.checked = false; i.closest('.coin').classList.remove('on'); });
+  async function restartIfRunning() {
+    const st = state.status; if (!st || st.engine.state === 'stopped') return false;
+    const mode = st.engine.mode;
+    await post('/engine/stop');
+    for (let i = 0; i < 60; i++) { await new Promise((r) => setTimeout(r, 500)); const s2 = await api('/status'); if (s2.engine.state === 'stopped') break; }
+    if (mode === 'paper') await post('/engine/start', { mode: 'paper' });
+    return mode;
+  }
+  $('#coins-save').onclick = () => act(async () => {
+    const bases = [...$('#coin-grid').querySelectorAll('input:checked')].map((i) => i.value);
+    const r = await api('/coins', { method: 'PUT', body: JSON.stringify({ bases }) });
+    coinsData = r.coins; renderCoins();
+    const m = await restartIfRunning();
+    $('#coins-msg').textContent = m === 'paper' ? 'Saved and restarted.' : m === 'live' ? 'Saved. Live engine stopped; start it again when ready.' : 'Saved.';
+    loadConfig();
+  }, 'Coins saved');
+
+  // ---------- settings ----------
+  const EX_LIST = [
+    { id: 'coinbase', name: 'Coinbase Advanced', keys: [['coinbase_key_name', 'API key name', 'text', 'Looks like organizations/…/apiKeys/…'], ['coinbase_private_key', 'Private key (EC, PEM)', 'textarea', 'Paste the whole -----BEGIN EC PRIVATE KEY----- block']], note: 'Create a key at coinbase.com → Settings → API with "trade" permission and NO withdrawal permission.' },
+    { id: 'kraken', name: 'Kraken', keys: [['kraken_key', 'API key', 'text', ''], ['kraken_secret', 'Private key', 'password', '']], note: 'Kraken → Settings → API. Permissions: query funds, create & modify orders. Never withdrawals.' },
+    { id: 'binance_us', name: 'Binance.US', keys: [['binance_us_key', 'API key', 'text', ''], ['binance_us_secret', 'Secret key', 'password', '']], note: 'US customers. Lowest fees of the four; thin books on small coins.' },
+    { id: 'binance', name: 'Binance (global)', keys: [['binance_key', 'API key', 'text', ''], ['binance_secret', 'Secret key', 'password', '']], note: 'Not available to US persons.' },
+  ];
+  const FIELDS = {
+    strategy: [
+      ['min_edge_bps', 'Smallest gap worth trading', 'number', 'After fees, in bps. 5 = $5 per $10,000. Lower means more trades with thinner margins.'],
+      ['min_profit_quote', 'Smallest profit worth trading ($)', 'number', 'Skip trades expected to make less than this.'],
+      ['slippage_buffer_bps', 'Safety margin (bps)', 'number', 'Subtracted from every gap to allow for prices moving while orders are in flight.'],
+      ['depth_fraction', 'Share of displayed size to take', 'number', '0.5 = take at most half of what the exchange shows at the best price.'],
+      ['max_quote_age_ms', 'Ignore prices older than (ms)', 'number', 'Stale prices are never traded on.'],
+      ['max_notional_quote', 'Max per trade ($)', 'number', 'Hard cap on the size of each leg.'],
+    ],
+    risk: [
+      ['max_daily_loss_quote', 'Daily loss limit ($)', 'number', 'Trading halts for the rest of the day (UTC) once realised losses reach this.'],
+      ['max_consecutive_failures', 'Failed trades in a row before halting', 'number', 'A failed trade is one where only half completed and had to be undone.'],
+      ['max_consecutive_errors', 'Exchange errors in a row before switching it off', 'number', 'Network or API errors from one exchange.'],
+      ['pair_cooldown_ms', 'Pause between trades on the same coin (ms)', 'number', ''],
+      ['max_trades_per_day', 'Max trades per day', 'number', ''],
+      ['order_timeout_ms', 'Order timeout (ms)', 'number', 'How long to wait for an exchange to answer an order.'],
+      ['unwind_cross_bps', 'How aggressively to undo a half-trade (bps)', 'number', 'Crossing the book by this much to guarantee the undo fills.'],
+    ],
+    paper: [
+      ['start_quote', 'Pretend cash per exchange ($)', 'number', ''],
+      ['start_base', 'Pretend coins per exchange', 'number', 'Units of each coin the pretend account starts with.'],
+      ['sim_slippage_bps', 'Simulated slippage (bps)', 'number', 'Makes pretend fills a little worse than quoted, like real ones.'],
+      ['sim_latency_ms', 'Simulated order delay (ms)', 'number', ''],
+    ],
+    maker: [
+      ['enabled', 'Maker mode on', 'checkbox', 'Leave standing offers on the quote exchange, hedge fills on the other.'],
+      ['quote_exchange', 'Exchange for standing offers', 'exchange', 'Use the one with the lowest maker fee.'],
+      ['hedge_exchange', 'Exchange for the hedge', 'exchange', 'Where fills are hedged at once (pays taker fee).'],
+      ['target_edge_bps', 'Required edge per round trip (bps)', 'number', ''],
+      ['quote_notional', 'Size of each offer ($)', 'number', ''],
+      ['max_inventory_notional', 'Max position per coin ($)', 'number', 'Stop offering on one side when the net position reaches this.'],
+      ['requote_bps', 'Re-post when fair price moves (bps)', 'number', ''],
+      ['max_improve_bps', 'Max improvement over best level (bps)', 'number', ''],
+      ['fill_poll_ms', 'Check for fills every (ms)', 'number', ''],
+      ['min_requote_ms', 'Min time between re-posts (ms)', 'number', 'Protects exchange rate limits.'],
+    ],
+  };
+  const MAKER_DEFAULTS = { enabled: false, quote_exchange: 'kraken', hedge_exchange: 'coinbase', target_edge_bps: '5', quote_notional: '50', max_inventory_notional: '300', requote_bps: '1', max_improve_bps: '1', fill_poll_ms: 500, min_requote_ms: 1000 };
+  let settingsData = null;
+  function fieldHtml(section, [key, label, type, help], val, exs) {
+    const id = `f-${section}-${key}`;
+    let input;
+    if (type === 'checkbox') input = `<input type="checkbox" id="${id}" data-section="${section}" data-key="${key}" data-type="checkbox" ${val ? 'checked' : ''}>`;
+    else if (type === 'exchange') input = `<select id="${id}" data-section="${section}" data-key="${key}" data-type="text">${exs.map((e) => `<option value="${e}" ${e === val ? 'selected' : ''}>${exName(e)}</option>`).join('')}</select>`;
+    else if (type === 'textarea') input = `<textarea id="${id}" data-section="${section}" data-key="${key}" data-type="text" placeholder="${esc(help)}"></textarea>`;
+    else input = `<input type="${type === 'number' ? 'text' : type}" id="${id}" data-section="${section}" data-key="${key}" data-type="${type}" value="${val === undefined || val === null ? '' : esc(val)}" ${type === 'password' ? 'placeholder="unchanged" autocomplete="new-password"' : ''}>`;
+    return `<div class="field"><label for="${id}">${label}</label>${input}${help && type !== 'textarea' ? `<div class="help">${esc(help)}</div>` : ''}</div>`;
+  }
+  function renderSettings() {
+    const d = settingsData; if (!d) return;
+    const c = d.config, sec = d.secrets; const exs = Object.keys(c.exchanges || {});
+    $('#settings-path').textContent = d.path;
+    $('#tab-exchanges').innerHTML = EX_LIST.map((x) => {
+      const ec = c.exchanges[x.id] || { enabled: false, taker_fee_bps: '10', maker_fee_bps: '10' };
+      const ready = (sec.ready || []).includes(x.id);
+      const keyFields = x.keys.map(([k, label, type, help]) => {
+        const current = type === 'password' || type === 'textarea' ? (sec[`${k}_set`] || sec[k.replace('_key', '_key')] ? '' : '') : (sec[k] || '');
+        const setNote = type === 'password' ? (sec[`${k}_set`] ? ' (saved)' : '') : type === 'textarea' ? (sec.coinbase_private_key_set ? ' (saved)' : '') : '';
+        return fieldHtml('secrets', [k, label + setNote, type, help], current, exs);
+      }).join('');
+      return `<div class="exch"><div class="head"><input type="checkbox" data-section="exchanges.${x.id}" data-key="enabled" data-type="checkbox" ${ec.enabled ? 'checked' : ''}><b>${x.name}</b><span class="tag ${ready ? 'ok' : 'dim'}">${ready ? 'keys saved' : 'no keys (paper only)'}</span><button class="btn" type="button" data-test="${x.id}">Test connection</button></div>
+        <div class="hint">${esc(x.note)}</div>
+        ${fieldHtml('exchanges.' + x.id, ['taker_fee_bps', 'Taker fee (bps)', 'number', 'Your fee when taking a price. 60 = 0.60%. The bot uses the higher of this and what the exchange reports.'], ec.taker_fee_bps, exs)}
+        ${fieldHtml('exchanges.' + x.id, ['maker_fee_bps', 'Maker fee (bps)', 'number', 'Your fee for standing offers.'], ec.maker_fee_bps, exs)}
+        ${keyFields}<div class="testres" id="test-${x.id}"></div></div>`;
+    }).join('') + `<p class="hint">Keys are stored in <code>${esc(sec.path)}</code>, readable only by your user, and never sent anywhere except the exchange itself. Create keys without withdrawal permission.</p>`;
+    for (const sect of ['strategy', 'risk', 'paper']) {
+      $(`#tab-${sect}`).innerHTML = FIELDS[sect].map((f) => fieldHtml(sect, f, (c[sect] || {})[f[0]], exs)).join('');
+    }
+    const m = Object.assign({}, MAKER_DEFAULTS, c.maker || {});
+    $('#tab-maker').innerHTML = FIELDS.maker.map((f) => fieldHtml('maker', f, m[f[0]], exs)).join('') + `<p class="hint">Run "Rank the coins" first: the ranking shows whether standing offers can clear your fees. In the Nov 2026 test, offers on Binance.US got zero fills in 25 minutes.</p>`;
+    $('#tab-live').innerHTML =
+      fieldHtml('', ['live', 'Allow live trading on this computer', 'checkbox', 'Gate 1 of 3. Off means the Start live button is refused.'], c.live, exs) +
+      fieldHtml('secrets', ['accept_losses', 'I understand this can lose real money', 'checkbox', 'Gate 2 of 3. The bot caps losses at the daily limit; it cannot promise profit.'], sec.accept_losses, exs) +
+      `<p class="hint">Gate 3 is typing the phrase when you press Start live. All three must be on. Also needed: keys saved for every enabled exchange, and money on both exchanges: dollars <b>and</b> coins on each.</p>`;
+    document.querySelectorAll('[data-test]').forEach((b) => b.onclick = async () => {
+      const el = $(`#test-${b.dataset.test}`); el.textContent = 'Testing…';
+      try { const r = await post(`/exchanges/${b.dataset.test}/test`); el.innerHTML = `<span class="${r.ok ? 'pos' : 'neg'}">${esc(r.message)}</span>${r.ok ? ` · taker ${r.taker_fee_bps} bps, maker ${r.maker_fee_bps} bps · ${r.balances.length ? r.balances.map(([a, q]) => `${a} ${q}`).join(', ') : 'no balances'}` : ''}`; }
+      catch (e) { el.innerHTML = `<span class="neg">${esc(e.message)}</span>`; }
+    });
+  }
+  function collectSettings() {
+    const config = {}, secrets = {};
+    document.querySelectorAll('#settings-form [data-section]').forEach((el) => {
+      const sect = el.dataset.section, key = el.dataset.key, type = el.dataset.type;
+      let val = type === 'checkbox' ? el.checked : el.value;
+      if (sect === 'secrets') {
+        if (type === 'checkbox') secrets[key] = val;
+        else if (String(val).trim() !== '') secrets[key] = val; // blank = unchanged
+        return;
+      }
+      if (type !== 'checkbox' && String(val).trim() === '') return;
+      let target = config;
+      for (const part of sect.split('.').filter(Boolean)) { target[part] = target[part] || {}; target = target[part]; }
+      target[key] = val;
+    });
+    return { config, secrets };
+  }
+  async function openSettings() {
+    try { settingsData = await api('/settings'); renderSettings(); $('#settings-msg').textContent = ''; $('#modal-settings').hidden = false; } catch (e) { toast(e.message, true); }
+  }
+  $('#btn-settings').onclick = openSettings;
+  $('#settings-cancel').onclick = () => { $('#modal-settings').hidden = true; };
+  $('#settings-tabs').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    $('#settings-tabs').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    document.querySelectorAll('#settings-form .tab').forEach((t) => t.hidden = t.dataset.tab !== b.dataset.tab);
+  });
+  $('#settings-save').onclick = async () => {
+    const body = collectSettings(); $('#settings-msg').textContent = 'Saving…';
+    try {
+      const r = await api('/settings', { method: 'PUT', body: JSON.stringify(body) });
+      settingsData = { config: r.config, secrets: r.secrets, path: settingsData.path }; renderSettings();
+      let msg = 'Saved.';
+      if (r.restart_required) { const m = await restartIfRunning(); msg = m === 'paper' ? 'Saved and restarted the engine.' : 'Saved. Engine stopped; start it again when ready.'; }
+      $('#settings-msg').textContent = msg; toast(msg); loadConfig(); loadCoins(); pollStatus();
+    } catch (e) { $('#settings-msg').textContent = e.message; toast(e.message, true); }
+  };
+
   // ---------- boot ----------
-  loadAgents(); loadConfig(); pollStatus(); pollEvents(); renderEvents();
+  loadAgents(); loadConfig(); loadCoins(); pollStatus(); pollEvents(); renderEvents();
   setInterval(pollStatus, 1000); setInterval(pollEvents, 2000); setInterval(pollAgentHealth, 5000);
 })();

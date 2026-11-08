@@ -62,8 +62,10 @@ the API has start-live and config-write endpoints.
 Three gates, all required, same as the CLI:
 
 1. `live = true` in `/etc/speedcraft/config.toml`
-2. `SPEEDCRAFT_I_ACCEPT_LOSSES=yes` plus exchange keys in `/etc/speedcraft/agent.env`,
-   then `sudo systemctl restart speedcraft-agent`
+2. The loss acknowledgement: tick it in the Mac app's Settings → Live trading
+   while the agent's tab is selected (it is saved on the agent), or set
+   `SPEEDCRAFT_I_ACCEPT_LOSSES=yes` in `/etc/speedcraft/agent.env`. Exchange
+   keys likewise: Settings → Exchanges & keys on the agent's tab, or the env file.
 3. Typing `I ACCEPT LOSSES` in the Mac app's live dialog (or
    `SPEEDCRAFT_AUTOSTART=live` at install time, which counts as the explicit confirmation
    for unattended restarts)
@@ -99,6 +101,9 @@ All under `/api`, JSON, `Authorization: Bearer <token>` when a token is set.
 | POST | `/engine/resume` | clear a halt |
 | POST | `/stopfile` | `{"present":true}` create/remove the STOP file |
 | GET / PUT | `/config` | read / validate-and-write `config.toml` |
+| GET / PUT | `/settings` | structured config plus masked secrets; PUT takes `{"config": {...patch}, "secrets": {...}}` |
+| GET / PUT | `/coins` | catalog and selected coins; PUT `{"bases": ["BTC","SOL"]}` rewrites the pairs |
+| POST | `/exchanges/{id}/test` | read fees, balances and market rules with the saved keys; never trades |
 | POST | `/quit` | UI host only: stop the engine and exit the process |
 | POST | `/record` | `{"on":true}` start saving every quote the running engine sees to `quotes-<date>.jsonl`; `{"on":false}` stop |
 | POST | `/scan` | `{"file":"..."}` optional; ranks the newest recording at your fee floors plus volume and zero tiers |

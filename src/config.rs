@@ -8,6 +8,8 @@ use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+#[allow(unused_imports)]
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -27,6 +29,9 @@ pub struct Config {
     pub paper: PaperConfig,
     #[serde(default)]
     pub maker: Option<MakerConfig>,
+    /// Directory the config was loaded from (secrets.toml, recordings, STOP live here).
+    #[serde(skip)]
+    pub dir: Option<std::path::PathBuf>,
 }
 
 /// Maker mode: rest post-only quotes on `quote_exchange`, hedge fills with
@@ -165,7 +170,62 @@ impl Default for PaperConfig {
     }
 }
 
-/// Secrets. Read from environment only; never from the config file.
+/// On-disk secrets next to the config (`secrets.toml`, mode 0600), written by
+/// the panel's Settings page. Environment variables override these.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SecretsFile {
+    #[serde(default)]
+    pub coinbase_key_name: Option<String>,
+    #[serde(default)]
+    pub coinbase_private_key: Option<String>,
+    #[serde(default)]
+    pub kraken_key: Option<String>,
+    #[serde(default)]
+    pub kraken_secret: Option<String>,
+    #[serde(default)]
+    pub binance_key: Option<String>,
+    #[serde(default)]
+    pub binance_secret: Option<String>,
+    #[serde(default)]
+    pub binance_us_key: Option<String>,
+    #[serde(default)]
+    pub binance_us_secret: Option<String>,
+    /// The operator's acknowledgement that live trading can lose money; one
+    /// of the three live gates (equivalent to SPEEDCRAFT_I_ACCEPT_LOSSES=yes).
+    #[serde(default)]
+    pub accept_losses: bool,
+}
+
+impl SecretsFile {
+    pub fn path(dir: &Path) -> std::path::PathBuf {
+        dir.join("secrets.toml")
+    }
+    pub fn load(dir: &Path) -> Result<SecretsFile> {
+        let p = Self::path(dir);
+        if !p.exists() {
+            return Ok(SecretsFile::default());
+        }
+        let text =
+            std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+        toml::from_str(&text).context("parsing secrets.toml")
+    }
+    pub fn save(&self, dir: &Path) -> Result<()> {
+        let p = Self::path(dir);
+        let text = toml::to_string_pretty(self)?;
+        let tmp = p.with_extension("toml.tmp");
+        std::fs::write(&tmp, text)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        }
+        std::fs::rename(&tmp, &p)?;
+        Ok(())
+    }
+}
+
+/// Secrets as the running process sees them: the secrets file (if any)
+/// overridden by environment variables. Never read from the config file.
 #[derive(Clone, Debug, Default)]
 pub struct Secrets {
     pub coinbase_key_name: Option<String>,
@@ -176,9 +236,33 @@ pub struct Secrets {
     pub binance_secret: Option<String>,
     pub binance_us_key: Option<String>,
     pub binance_us_secret: Option<String>,
+    pub accept_losses: bool,
 }
 
 impl Secrets {
+    /// File first, then environment on top.
+    pub fn load(dir: Option<&Path>) -> Secrets {
+        let file = dir
+            .and_then(|d| SecretsFile::load(d).ok())
+            .unwrap_or_default();
+        let env = Secrets::from_env();
+        let pick = |e: Option<String>, f: Option<String>| e.or(f).filter(|v| !v.trim().is_empty());
+        Secrets {
+            coinbase_key_name: pick(env.coinbase_key_name, file.coinbase_key_name),
+            coinbase_key_pem: pick(
+                env.coinbase_key_pem,
+                file.coinbase_private_key.map(|s| s.replace("\\n", "\n")),
+            ),
+            kraken_key: pick(env.kraken_key, file.kraken_key),
+            kraken_secret: pick(env.kraken_secret, file.kraken_secret),
+            binance_key: pick(env.binance_key, file.binance_key),
+            binance_secret: pick(env.binance_secret, file.binance_secret),
+            binance_us_key: pick(env.binance_us_key, file.binance_us_key),
+            binance_us_secret: pick(env.binance_us_secret, file.binance_us_secret),
+            accept_losses: env.accept_losses || file.accept_losses,
+        }
+    }
+
     pub fn from_env() -> Secrets {
         let g = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
         Secrets {
@@ -190,6 +274,9 @@ impl Secrets {
             binance_secret: g("BINANCE_API_SECRET"),
             binance_us_key: g("BINANCE_US_API_KEY"),
             binance_us_secret: g("BINANCE_US_API_SECRET"),
+            accept_losses: g("SPEEDCRAFT_I_ACCEPT_LOSSES")
+                .map(|v| v == "yes")
+                .unwrap_or(false),
         }
     }
 
@@ -211,8 +298,15 @@ impl Config {
     pub fn load(path: &Path) -> Result<Config> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading config {}", path.display()))?;
-        let cfg: Config = toml::from_str(&text).context("parsing config TOML")?;
+        let mut cfg: Config = toml::from_str(&text).context("parsing config TOML")?;
         cfg.validate()?;
+        cfg.dir = path.parent().map(|d| {
+            if d.as_os_str().is_empty() {
+                std::path::PathBuf::from(".")
+            } else {
+                d.to_path_buf()
+            }
+        });
         Ok(cfg)
     }
 
@@ -388,6 +482,40 @@ mod tests {
         let mut cfg: Config = toml::from_str(EXAMPLE_TOML).unwrap();
         cfg.strategy.depth_fraction = dec!(1.5);
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn secrets_file_roundtrip_and_env_override() {
+        let dir = std::env::temp_dir().join(format!(
+            "speedcraft-secrets-{}-{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(SecretsFile::load(&dir).unwrap().kraken_key.is_none());
+        let f = SecretsFile {
+            kraken_key: Some("k".into()),
+            kraken_secret: Some("s".into()),
+            accept_losses: true,
+            ..Default::default()
+        };
+        f.save(&dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(SecretsFile::path(&dir))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        let s = Secrets::load(Some(&dir));
+        assert_eq!(s.kraken_key.as_deref(), Some("k"));
+        assert!(s.has(ExchangeId::Kraken));
+        assert!(!s.has(ExchangeId::Coinbase));
+        assert!(s.accept_losses);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

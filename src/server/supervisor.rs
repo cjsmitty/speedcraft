@@ -4,9 +4,9 @@
 use crate::config::Config;
 use crate::engine::{Control, Recorder, RecorderStatus, Shared, StampedEvent, StatusSnapshot};
 use crate::runtime::{
-    build_engine, check_live_gates, live_env_set, run_engine, Mode, LIVE_CONFIRM_PHRASE,
+    build_engine, check_live_gates, losses_accepted, run_engine, Mode, LIVE_CONFIRM_PHRASE,
 };
-use crate::types::now_ms;
+use crate::types::{now_ms, ExchangeId};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -255,7 +255,7 @@ impl Supervisor {
             Ok(c) => ConfigSummary {
                 path: self.cfg_path.display().to_string(),
                 live_in_config: c.live,
-                live_env_set: live_env_set(),
+                live_env_set: losses_accepted(&c),
                 min_edge_bps: c.strategy.min_edge_bps.to_string(),
                 max_notional_quote: c.strategy.max_notional_quote.to_string(),
                 max_daily_loss_quote: c.risk.max_daily_loss_quote.to_string(),
@@ -271,7 +271,7 @@ impl Supervisor {
             Err(e) => ConfigSummary {
                 path: self.cfg_path.display().to_string(),
                 live_in_config: false,
-                live_env_set: live_env_set(),
+                live_env_set: crate::runtime::live_env_set(),
                 min_edge_bps: String::new(),
                 max_notional_quote: String::new(),
                 max_daily_loss_quote: String::new(),
@@ -420,6 +420,38 @@ impl Supervisor {
             min_edge_bps: cfg.strategy.min_edge_bps.to_string().parse().unwrap_or(5.0),
             stats,
         })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CoinsView {
+    pub catalog: Vec<crate::coins::CoinInfo>,
+    pub selected: Vec<String>,
+    pub exchanges: Vec<ExchangeId>,
+}
+
+impl Supervisor {
+    pub fn coins(&self) -> Result<CoinsView> {
+        let cfg = self.load_config()?;
+        let selected = cfg
+            .pairs
+            .iter()
+            .filter_map(|p| p.pair.split('/').next().map(|b| b.to_string()))
+            .collect();
+        Ok(CoinsView {
+            catalog: crate::coins::catalog(),
+            selected,
+            exchanges: cfg.enabled_exchanges(),
+        })
+    }
+
+    /// Replace the configured pairs with `bases` (e.g. ["BTC", "SOL"]).
+    pub fn set_coins(&self, bases: &[String]) -> Result<CoinsView> {
+        let cfg = self.load_config()?;
+        let text = self.read_config_text()?;
+        let new_text = crate::coins::apply_coins(&text, bases, &cfg.enabled_exchanges())?;
+        self.write_config_text(&new_text)?;
+        self.coins()
     }
 }
 
