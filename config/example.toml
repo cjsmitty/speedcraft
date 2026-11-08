@@ -213,6 +213,19 @@ fill_poll_ms = 500
 min_requote_ms = 1000         # never cancel/replace a side more often than this
 # pairs = ["ATOM/USD", "INJ/USD"]   # default: all pairs mapped on both venues
 
+# Futures basis carry (Coinbase Derivatives): buy spot, sell the dated future,
+# hold to expiry. The premium is locked in at entry, net of fees. This version
+# measures and keeps paper positions; it does not place futures orders.
+[carry]
+enabled = true
+notional = 1000                 # spot dollars per position
+min_annualized_pct = 3          # count as worth it above this net return per year
+futures_fee_per_contract = 0.10 # exchange fee per nano contract per side (verify yours)
+initial_margin_pct = 35         # margin for the short future, % of notional (verify yours)
+underlyings = ["BTC", "ETH", "SOL", "XRP"]
+poll_secs = 15
+paper_positions = true
+
 [paper]
 start_quote = 10000
 start_base = 0.2

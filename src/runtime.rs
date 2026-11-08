@@ -178,7 +178,28 @@ pub async fn run_engine(
         .context("preflight failed; not starting")?;
     tracing::info!("preflight ok: {}", engine.status_line());
     let (tx, rx) = mpsc::channel::<TopOfBook>(4096);
-    let handles = engine.spawn_streams(tx);
+    let mut handles = engine.spawn_streams(tx);
+    if engine.cfg.carry.enabled
+        && engine
+            .cfg
+            .enabled_exchanges()
+            .contains(&ExchangeId::Coinbase)
+    {
+        let state: crate::carry::SharedCarry = Arc::new(std::sync::Mutex::new(Default::default()));
+        engine.carry = Some(state.clone());
+        let spot_fee = engine
+            .fees
+            .get(&ExchangeId::Coinbase)
+            .map(|f| f.taker_bps)
+            .unwrap_or(engine.cfg.fee_floor(ExchangeId::Coinbase).taker_bps);
+        handles.push(tokio::spawn(crate::carry::run(
+            engine.cfg.carry.clone(),
+            spot_fee,
+            engine.book.clone(),
+            state,
+            shutdown.clone(),
+        )));
+    }
     let result = engine.run(rx, shutdown).await;
     for h in handles {
         h.abort();
