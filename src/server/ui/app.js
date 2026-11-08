@@ -318,13 +318,14 @@
   }
   async function loadAgents() {
     try { const r = await api('/agents', {}, '/api'); state.agents = r.agents; state.isHost = true; } catch (e) { if (/headless/.test(e.message)) state.isHost = false; }
-    renderTabs(); renderAgents(); pollAgentHealth();
+    updateQuitButton(); renderTabs(); renderAgents(); pollAgentHealth();
   }
   async function loadConfig() {
     try { const r = await api('/config'); $('#config-text').value = r.toml; $('#config-path').textContent = r.path; state.configDirty = false; $('#config-msg').textContent = ''; } catch (e) { $('#config-msg').textContent = e.message; }
   }
+  function updateQuitButton() { $('#btn-quit').hidden = !(state.isHost && state.agent === 'local'); }
   function switchAgent(id) {
-    state.agent = id; state.lastSeq = 0; state.events = []; state.edgeHistory = {}; state.status = null; state.scan = null;
+    state.agent = id; state.lastSeq = 0; state.events = []; state.edgeHistory = {}; state.status = null; state.scan = null; updateQuitButton();
     renderEvents(); renderResearch(); renderTabs(); pollStatus(); pollEvents(); loadConfig();
   }
 
@@ -352,6 +353,13 @@
   $('#agent-form').onsubmit = (ev) => { ev.preventDefault(); act(async () => { await api('/agents', { method: 'POST', body: JSON.stringify({ name: $('#agent-name').value, url: $('#agent-url').value, token: $('#agent-token').value }) }, '/api'); $('#agent-form').reset(); await loadAgents(); }, 'Computer added'); };
   $('#token-save').onclick = () => { state.token = $('#token-input').value.trim(); localStorage.setItem('speedcraft_token', state.token); $('#modal-token').hidden = true; pollStatus(); loadAgents(); loadConfig(); };
   $('#btn-help').onclick = () => { $('#modal-help').hidden = false; };
+  $('#btn-quit').onclick = async () => {
+    if (!confirm('Quit Speedcraft on this computer? The engine stops cleanly and any standing offers are cancelled.')) return;
+    try {
+      await post('/quit');
+      document.body.innerHTML = '<main style="max-width:560px;margin:80px auto;text-align:center"><h1>Speedcraft has quit</h1><p class="hint">You can close this tab. Open the app again to start it.</p></main>';
+    } catch (e) { toast(e.message, true); }
+  };
   $('#help-close').onclick = () => { $('#modal-help').hidden = true; };
   document.querySelectorAll('.modal').forEach((m) => m.addEventListener('click', (e) => { if (e.target === m) m.hidden = true; }));
   const applyTheme = (t) => { if (t) document.documentElement.setAttribute('data-theme', t); else document.documentElement.removeAttribute('data-theme'); };

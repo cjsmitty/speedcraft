@@ -32,6 +32,8 @@ pub struct AppState {
     pub agents: Option<Arc<AgentRegistry>>,
     pub token: Option<String>,
     pub http: reqwest::Client,
+    /// Present on the local UI host: lets the panel's Quit button stop the process.
+    pub quit: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -45,6 +47,7 @@ pub fn router(state: AppState) -> Router {
         .route("/stopfile", post(stopfile))
         .route("/config", get(config_get).put(config_put))
         .route("/record", post(record_toggle))
+        .route("/quit", post(quit))
         .route("/scan", post(scan_run))
         .route("/agents", get(agents_list).post(agents_add))
         .route("/agents/:id", axum::routing::delete(agents_remove))
@@ -210,6 +213,19 @@ async fn config_put(State(st): State<AppState>, Json(req): Json<ConfigPut>) -> A
     ))
 }
 
+async fn quit(State(st): State<AppState>) -> ApiResult {
+    let Some(tx) = &st.quit else {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "this instance cannot be quit remotely; stop it on its own machine".into(),
+        ));
+    };
+    let _ = tx.send(()).await;
+    Ok(Json(
+        json!({"ok": true, "message": "Speedcraft is shutting down"}),
+    ))
+}
+
 #[derive(Deserialize)]
 struct RecordReq {
     on: bool,
@@ -370,6 +386,7 @@ mod tests {
                 agents,
                 token: token.map(String::from),
                 http: reqwest::Client::new(),
+                quit: None,
             },
             dir,
         )
@@ -573,6 +590,24 @@ mod tests {
         assert_eq!(s, StatusCode::OK);
         let (_, v) = call(app, "GET", "/api/agents", None, None).await;
         assert_eq!(v["agents"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn quit_is_refused_without_a_quit_channel_and_signals_with_one() {
+        let (st, _d) = state(None, true);
+        let app = router(st.clone());
+        let (s, _) = call(app, "POST", "/api/quit", None, None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let st2 = AppState {
+            quit: Some(tx),
+            ..st
+        };
+        let app = router(st2);
+        let (s, v) = call(app, "POST", "/api/quit", None, None).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(v["ok"], true);
+        assert!(rx.try_recv().is_ok(), "quit signal delivered");
     }
 
     #[tokio::test]

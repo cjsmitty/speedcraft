@@ -169,11 +169,16 @@ fn resolve_token(
 }
 
 async fn serve(
-    state: AppState,
+    mut state: AppState,
     listen: SocketAddr,
     open_browser: bool,
     autostart: Option<String>,
+    allow_quit: bool,
 ) -> Result<()> {
+    let (quit_tx, mut quit_rx) = mpsc::channel::<()>(1);
+    if allow_quit {
+        state.quit = Some(quit_tx);
+    }
     if let Some(mode) = autostart {
         let m = Mode::parse(&mode)
             .ok_or_else(|| anyhow::anyhow!("--autostart must be paper or live"))?;
@@ -196,7 +201,10 @@ async fn serve(
     let sup = state.sup.clone();
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = quit_rx.recv() => { tracing::info!("quit requested from the panel"); }
+            }
             tracing::info!("shutting down: stopping engine first");
             if sup.stop().is_ok() {
                 sup.wait_stopped(std::time::Duration::from_secs(15)).await;
@@ -265,8 +273,9 @@ async fn main() -> Result<()> {
                 agents: Some(Arc::new(registry)),
                 token: token.filter(|t| !t.trim().is_empty()),
                 http: speedcraft::exchanges::http_client(),
+                quit: None,
             };
-            serve(state, listen, !no_open, autostart).await
+            serve(state, listen, !no_open, autostart, true).await
         }
         Cmd::Agent {
             listen,
@@ -286,8 +295,9 @@ async fn main() -> Result<()> {
                 agents: None,
                 token,
                 http: speedcraft::exchanges::http_client(),
+                quit: None,
             };
-            serve(state, listen, false, autostart).await
+            serve(state, listen, false, autostart, false).await
         }
         Cmd::Check => {
             let secrets = Secrets::from_env();
